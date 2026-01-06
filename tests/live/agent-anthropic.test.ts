@@ -239,5 +239,50 @@ describe.skipIf(!ANTHROPIC_API_KEY)('Agent with Anthropic', () => {
 
       expect(result2.turn.response.text.toLowerCase()).toContain('blue');
     });
+
+    test('withContext() replaces conversation history', async () => {
+      const a = agent({
+        model: anthropic('claude-3-5-haiku-latest'),
+        params: { max_tokens: 100 },
+      });
+
+      // Build up conversation history
+      const state0 = AgentState.initial();
+      const result1 = await a.ask('My name is Alice.', state0);
+      const result2 = await a.ask('I live in Paris.', result1.state);
+
+      // Verify context is preserved
+      expect(result2.state.messages.length).toBeGreaterThanOrEqual(4);
+
+      // Replace context with empty (simulating aggressive pruning)
+      const prunedState = result2.state.withContext([]);
+
+      // Model should not know the name anymore
+      const result3 = await a.ask('What is my name?', prunedState);
+
+      // Should NOT contain Alice since context was cleared
+      const response = result3.turn.response.text.toLowerCase();
+      expect(response.includes('alice')).toBe(false);
+    });
+
+    test('withContext() preserves metadata while replacing messages', async () => {
+      const a = agent({
+        model: anthropic('claude-3-5-haiku-latest'),
+        params: { max_tokens: 50 },
+      });
+
+      const state0 = AgentState.initial()
+        .withMetadata('sessionId', 'test-123')
+        .withMetadata('tokenBudget', 50000);
+
+      const result1 = await a.ask('Hello there!', state0);
+
+      // Replace messages but keep metadata
+      const prunedState = result1.state.withContext([]);
+
+      expect(prunedState.messages).toHaveLength(0);
+      expect(prunedState.metadata.sessionId).toBe('test-123');
+      expect(prunedState.metadata.tokenBudget).toBe(50000);
+    });
   });
 });

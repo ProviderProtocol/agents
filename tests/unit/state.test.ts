@@ -104,6 +104,84 @@ describe('AgentState', () => {
     });
   });
 
+  describe('withContext()', () => {
+    test('replaces all messages', () => {
+      const state = AgentState.initial()
+        .withMessage(new UserMessage('First'))
+        .withMessage(new AssistantMessage('Response'))
+        .withMessage(new UserMessage('Second'));
+
+      const newMessages = [
+        new UserMessage('Replacement'),
+      ];
+
+      const newState = state.withContext(newMessages);
+
+      expect(newState.messages).toHaveLength(1);
+      expect(newState.messages[0]).toBe(newMessages[0]);
+    });
+
+    test('does not modify original state', () => {
+      const originalMessage = new UserMessage('Original');
+      const state = AgentState.initial()
+        .withMessage(originalMessage);
+
+      state.withContext([new UserMessage('Replacement')]);
+
+      expect(state.messages).toHaveLength(1);
+      expect(state.messages[0]).toBe(originalMessage);
+    });
+
+    test('returns state with new id', () => {
+      const state = AgentState.initial()
+        .withMessage(new UserMessage('Hello'));
+
+      const newState = state.withContext([new UserMessage('New')]);
+
+      expect(newState.id).not.toBe(state.id);
+    });
+
+    test('preserves other state properties', () => {
+      const state = AgentState.initial()
+        .withMessage(new UserMessage('Original'))
+        .withStep(5)
+        .withMetadata('key', 'value')
+        .withReasoning('Some reasoning');
+
+      const newState = state.withContext([new UserMessage('Replaced')]);
+
+      expect(newState.step).toBe(5);
+      expect(newState.metadata).toEqual({ key: 'value' });
+      expect(newState.reasoning).toEqual(['Some reasoning']);
+    });
+
+    test('can replace with empty messages array', () => {
+      const state = AgentState.initial()
+        .withMessage(new UserMessage('First'))
+        .withMessage(new AssistantMessage('Second'));
+
+      const newState = state.withContext([]);
+
+      expect(newState.messages).toHaveLength(0);
+    });
+
+    test('enables context window management patterns', () => {
+      // Simulate pruning old tool outputs
+      const state = AgentState.initial()
+        .withMessage(new UserMessage('Query 1'))
+        .withMessage(new AssistantMessage('Long tool output response 1'))
+        .withMessage(new UserMessage('Query 2'))
+        .withMessage(new AssistantMessage('Long tool output response 2'))
+        .withMessage(new UserMessage('Query 3'));
+
+      // Prune to keep only last 2 messages (simulating context management)
+      const prunedMessages = state.messages.slice(-2);
+      const newState = state.withContext([...prunedMessages]);
+
+      expect(newState.messages).toHaveLength(2);
+    });
+  });
+
   describe('withStep()', () => {
     test('updates step number', () => {
       const state = AgentState.initial();
@@ -276,6 +354,7 @@ describe('AgentState', () => {
       const operations = [
         () => state.withMessage(new UserMessage('test')),
         () => state.withMessages([new UserMessage('test')]),
+        () => state.withContext([new UserMessage('test')]),
         () => state.withStep(1),
         () => state.withMetadata('key', 'value'),
         () => state.withReasoning('thinking'),

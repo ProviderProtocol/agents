@@ -91,6 +91,21 @@ export class AgentState implements AgentStateInterface {
   }
 
   /**
+   * Return new state with context replaced (all messages).
+   * Use for context window management (pruning, summarization).
+   */
+  withContext(messages: Message[]): AgentState {
+    return new AgentState(
+      generateUUID(),
+      [...messages],
+      this.step,
+      this.metadata,
+      this.reasoning,
+      this.plan,
+    );
+  }
+
+  /**
    * Return new state with updated step number.
    */
   withStep(step: number): AgentState {

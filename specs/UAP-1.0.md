@@ -849,6 +849,7 @@ interface AgentState {
   // Immutable operations - all return new AgentState
   withMessage(message: Message) -> AgentState
   withMessages(messages: List<Message>) -> AgentState
+  withContext(messages: List<Message>) -> AgentState
   withStep(step: Integer) -> AgentState
   withMetadata(key: String, value: Any) -> AgentState
   withReasoning(reasoning: String) -> AgentState
@@ -858,6 +859,160 @@ interface AgentState {
   toJSON() -> AgentStateJSON
   static fromJSON(json: AgentStateJSON) -> AgentState
 }
+```
+
+**Message Operations:**
+
+- `withMessage(message)` — Appends a single message to history
+- `withMessages(messages)` — Appends multiple messages to history
+- `withContext(messages)` — **Replaces** entire message history
+
+The distinction between `withMessages` and `withContext` is critical:
+
+```pseudocode
+state = AgentState.initial()
+  .withMessage(UserMessage("Hello"))
+  .withMessage(AssistantMessage("Hi"))
+
+// Append: messages = [Hello, Hi, Goodbye]
+state.withMessages([UserMessage("Goodbye")])
+
+// Replace: messages = [Fresh start]
+state.withContext([UserMessage("Fresh start")])
+```
+
+**Context Window Management:**
+
+`withContext(messages)` enables context window management via middleware. UAP does not provide token estimation or model limits—developers are responsible for their model's constraints.
+
+**Pattern 1: Prune Old Tool Outputs**
+
+Tool outputs (file reads, command results) consume significant tokens and become stale. Prune them while protecting recent context:
+
+```pseudocode
+pruneToolOutputs: Middleware = {
+  name: "prune-tool-outputs",
+
+  before: async (ctx) => {
+    // Simple token estimation: ~4 chars per token
+    estimate = (msg) => JSON.stringify(msg).length / 4
+    total = sum(ctx.state.messages.map(estimate))
+
+    // Model-specific limit (developer knows their model)
+    CONTEXT_LIMIT = 200000
+    OUTPUT_RESERVE = 16000
+    PROTECT_RECENT = 40000
+
+    usable = CONTEXT_LIMIT - OUTPUT_RESERVE
+    if (total <= usable) return ctx
+
+    // Scan backwards, protect recent tokens, prune old tool outputs
+    messages = [...ctx.state.messages]
+    protected = 0
+
+    for (i = messages.length - 1; i >= 0; i--) {
+      msg = messages[i]
+      msgTokens = estimate(msg)
+      protected += msgTokens
+
+      if (protected > PROTECT_RECENT && isToolResultMessage(msg)) {
+        // Replace tool output with placeholder
+        messages[i] = ToolResultMessage([{
+          toolCallId: msg.results[0].toolCallId,
+          result: "[Output cleared - context limit]"
+        }])
+      }
+    }
+
+    return { ...ctx, state: ctx.state.withContext(messages) }
+  },
+}
+```
+
+**Pattern 2: Sliding Window**
+
+Keep only the N most recent messages:
+
+```pseudocode
+slidingWindow: Middleware = {
+  name: "sliding-window",
+
+  before: async (ctx) => {
+    MAX_MESSAGES = 50
+    messages = ctx.state.messages
+
+    if (messages.length <= MAX_MESSAGES) return ctx
+
+    // Keep most recent, ensuring we don't split user/assistant pairs
+    truncated = messages.slice(-MAX_MESSAGES)
+    return { ...ctx, state: ctx.state.withContext(truncated) }
+  },
+}
+```
+
+**Pattern 3: Summarize Old Context**
+
+Use a smaller model to summarize old conversation before discarding:
+
+```pseudocode
+summarizeOldContext: Middleware = {
+  name: "summarize-context",
+
+  // Summarizer LLM passed at construction
+  init: (summarizerLLM) => ({
+    before: async (ctx) => {
+      estimate = (msg) => JSON.stringify(msg).length / 4
+      total = sum(ctx.state.messages.map(estimate))
+
+      THRESHOLD = 150000
+      KEEP_RECENT = 10
+
+      if (total <= THRESHOLD) return ctx
+
+      messages = ctx.state.messages
+      old = messages.slice(0, -KEEP_RECENT)
+      recent = messages.slice(-KEEP_RECENT)
+
+      // Generate summary of old context
+      summary = await summarizerLLM.query(
+        "Summarize this conversation, preserving key facts:\n" +
+        old.map(m => JSON.stringify(m)).join("\n")
+      )
+
+      // Replace with summary + recent messages
+      return {
+        ...ctx,
+        state: ctx.state.withContext([
+          UserMessage("[Previous conversation summary]\n" + summary.response.text),
+          ...recent
+        ])
+      }
+    },
+  }),
+}
+
+// Usage
+agent({
+  middleware: [
+    summarizeOldContext.init(
+      llm({ model: anthropic("claude-3-5-haiku-latest"), params: { max_tokens: 500 } })
+    ),
+  ],
+})
+```
+
+**Composing Strategies:**
+
+Middleware composes naturally—apply multiple strategies in order:
+
+```pseudocode
+agent({
+  middleware: [
+    pruneToolOutputs(),      // First: clear stale tool outputs
+    slidingWindow(100),      // Then: cap message count
+    summarizeIfNeeded(llm),  // Finally: summarize if still over
+  ],
+})
 ```
 
 ### 6.3 State Flow Example
@@ -1538,6 +1693,7 @@ interface AgentState {
   static initial(): AgentState
   withMessage(message): AgentState
   withMessages(messages): AgentState
+  withContext(messages): AgentState
   withStep(step): AgentState
   withMetadata(key, value): AgentState
   withReasoning(reasoning): AgentState

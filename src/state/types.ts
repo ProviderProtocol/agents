@@ -84,6 +84,8 @@ export interface AgentStateInterface {
   withMessage(message: Message): AgentStateInterface;
   /** Return new state with messages added */
   withMessages(messages: Message[]): AgentStateInterface;
+  /** Return new state with context replaced (all messages) */
+  withContext(messages: Message[]): AgentStateInterface;
   /** Return new state with updated step */
   withStep(step: number): AgentStateInterface;
   /** Return new state with metadata entry */
