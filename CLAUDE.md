@@ -12,6 +12,8 @@
 12. **Use icon libraries only** – Use established icon libraries for all icons. Do **not** write or embed custom inline SVGs. Rely on library-provided icons to ensure consistency, readability, and easier maintenance across the codebase.
 13. **Comprehensive, intentional testing discipline** – All features and changes must include both **static unit tests** and **live API/integration tests** where applicable. Every code change must explicitly consider its testing impact and ensure **all unit and live tests pass fully**. Tests should be written deliberately: validate real behavior, edge cases, and regressions while avoiding unnecessary duplication, over-mocking, or low-value assertions that create test bloat without increasing confidence.
 
+`.env` contains all AI provider keys. 
+
 Default to using Bun instead of Node.js.
 
 - Use `bun <file>` instead of `node <file>` or `ts-node <file>`
