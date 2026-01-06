@@ -1,7 +1,7 @@
 # UAP-1.0: Unified Agent Protocol Specification
 
-**Version:** 1.0.0-draft
-**Status:** Draft
+**Version:** 1.0.0
+**Status:** Approved
 **Built on:** UPP-1.2 (Unified Provider Protocol)
 **Authors:** UAP Working Group
 
@@ -11,7 +11,9 @@
 
 The Unified Agent Protocol (UAP) is a specification for building AI agents on top of the Unified Provider Protocol (UPP-1.2). This document defines the protocol semantics, data structures, and implementation requirements for building UAP-compliant agents, sessions, and execution strategies.
 
-UAP extends UPP-1.2 with agent-level abstractions including decoupled execution strategies (ReAct, Plan, Loop), tree-structured thread management, session persistence with full recovery, sub-agent composition, and middleware pipelines. UAP preserves complete type uniformity with UPP-1.2, using all types from `@providerprotocol/ai` directly without abstraction or re-export.
+UAP extends UPP-1.2 with agent-level abstractions including decoupled execution strategies (ReAct, Plan, Loop), functional state management, sub-agent composition, and middleware pipelines. UAP preserves complete type uniformity with UPP-1.2, using all types from `@providerprotocol/ai` directly without abstraction or re-export.
+
+**Core Philosophy:** UAP is a pipe, not a nanny. The protocol provides orchestration primitives; the developer provides the constraints.
 
 ---
 
@@ -22,17 +24,16 @@ UAP extends UPP-1.2 with agent-level abstractions including decoupled execution 
 3. [Core Concepts](#3-core-concepts)
 4. [Agent Interface](#4-agent-interface)
 5. [Execution Strategies](#5-execution-strategies)
-6. [Sessions](#6-sessions)
+6. [Functional State Management](#6-functional-state-management)
 7. [Thread Trees](#7-thread-trees)
 8. [Sub-Agent Protocol](#8-sub-agent-protocol)
-9. [Communication](#9-communication)
-10. [Middleware](#10-middleware)
-11. [Agent Strategy Hooks](#11-agent-strategy-hooks)
-12. [Streaming](#12-streaming)
-13. [Serialization](#13-serialization)
-14. [Data Type Definitions](#14-data-type-definitions)
-15. [Conformance](#15-conformance)
-16. [Security Considerations](#16-security-considerations)
+9. [Middleware](#9-middleware)
+10. [Agent Strategy Hooks](#10-agent-strategy-hooks)
+11. [Streaming](#11-streaming)
+12. [Serialization](#12-serialization)
+13. [Data Type Definitions](#13-data-type-definitions)
+14. [Conformance](#14-conformance)
+15. [Security Considerations](#15-security-considerations)
 
 ---
 
@@ -44,10 +45,11 @@ AI agents require orchestration beyond simple LLM inference. UAP-1.0 establishes
 
 - Provides agent abstractions built on UPP-1.2 primitives
 - Decouples execution strategies from agent definitions
-- Enables full session serialization and recovery
+- Uses functional state management with explicit data flow
 - Supports hierarchical agent composition (sub-agents)
 - Provides middleware for cross-cutting concerns
 - Maintains complete type uniformity with the underlying LLM library
+- Places full control and responsibility with the developer
 
 ### 1.2 Scope
 
@@ -55,9 +57,9 @@ This specification covers:
 
 - The `agent()` function interface for defining agents
 - Execution strategies (`react()`, `plan()`, `loop()`)
-- Session management with checkpoints
+- Functional state management with explicit state passing
 - Thread tree structures for branching conversations
-- Sub-agent communication patterns (`ask()`, `query()`)
+- Sub-agent communication via `ask()` and `query()` methods
 - Middleware composition
 - Agent strategy hooks
 - Serialization format for persistence
@@ -81,13 +83,12 @@ UAP MUST NOT re-export, wrap, or abstract these types. Applications import direc
 | Term | Definition |
 |------|------------|
 | **Agent** | An AI entity with a model, execution strategy, tools, and optional sub-agents |
-| **Session** | A stateful wrapper around an agent containing thread tree, checkpoints, and metadata |
-| **Thread Tree** | A tree-structured collection of threads with parent-child relationships |
+| **AgentState** | An immutable snapshot of agent execution state |
 | **Step** | A single cycle of an execution strategy (reason-act-observe in ReAct) |
-| **Checkpoint** | A serialized snapshot of session state at a specific point |
-| **Sub-Agent** | An agent invoked as a tool by a parent agent |
+| **Sub-Agent** | An agent declared as a tool dependency for another agent |
 | **Middleware** | A composable function that wraps agent execution |
 | **Turn** | A UPP Turn representing the complete result of one LLM inference call |
+| **Thread Tree** | A tree-structured collection of threads with parent-child relationships |
 
 ### 1.5 Requirements Language
 
@@ -123,7 +124,7 @@ Import examples throughout this specification use JavaScript-style imports for r
 
 ```pseudocode
 // Agent SDK imports
-import { agent, session, ask, query } from "agents"
+import { agent } from "agents"
 import { react, plan, loop } from "agents/execution"
 import { logging } from "agents/middleware"
 
@@ -149,8 +150,8 @@ UAP MUST NOT create abstractions around UPP-1.2 types. All data flows through st
 // CORRECT: Use UPP types directly
 import { Thread, Turn, UserMessage } from "upp"
 
-turn = await agent.run("Hello")
-thread.append(turn)  // Standard UPP Turn
+{ turn, state } = await agent.generate("Hello", initialState)
+// turn is standard UPP Turn, state is explicit AgentState
 
 // INCORRECT: Creating wrapper types
 import { AgentTurn } from "agents"  // DO NOT DO THIS
@@ -158,7 +159,40 @@ import { AgentTurn } from "agents"  // DO NOT DO THIS
 
 **Rationale:** Wrapping library types creates maintenance burden, obscures debugging, and prevents access to provider-specific metadata. UAP agents operate on the same data structures as raw LLM calls.
 
-### 2.2 Decoupled Execution
+### 2.2 Functional State Management
+
+UAP adopts a functional state pattern. Agent execution is a pure transformation:
+
+```
+(Input, State) -> (Turn, NewState)
+```
+
+**Core Requirements:**
+
+- `AgentState` is immutable—each operation returns a new state
+- State is explicitly passed and returned, never mutated internally
+- No "ghost history" from hidden state accumulation
+- Developer controls what state persists between calls
+
+```pseudocode
+// Explicit state flow
+state0 = AgentState.initial()
+
+{ turn: turn1, state: state1 } = await agent.generate("First message", state0)
+{ turn: turn2, state: state2 } = await agent.generate("Second message", state1)
+
+// State is explicit and inspectable
+print(state2.messages.length)  // Developer knows exactly what's there
+print(state2.step)             // Current step count
+
+// Branching is trivial—just use different states
+{ turn: turn3a, state: state3a } = await agent.generate("Option A", state1)
+{ turn: turn3b, state: state3b } = await agent.generate("Option B", state1)
+```
+
+**Rationale:** Implicit state mutation violates UPP's "Explicit Over Magic" principle. Functional state makes data flow visible, debugging tractable, and serialization trivial.
+
+### 2.3 Decoupled Execution
 
 Execution strategies are separate from agent definitions:
 
@@ -167,7 +201,7 @@ Execution strategies are separate from agent definitions:
 - Strategies are interchangeable without changing agent definition
 
 ```pseudocode
-// Same agent, different execution strategies
+// Same agent definition, different execution strategies
 const coder = agent({
   model: anthropic("claude-sonnet-4-20250514"),
   tools: [Bash, Read, Write],
@@ -183,68 +217,84 @@ const loopCoder = agent({ ...coder, execution: loop() })
 
 **Rationale:** Separating execution from definition mirrors UPP's separation of model binding from inference. It enables experimentation with different strategies without redefining agents.
 
-### 2.3 First-Class Serialization
+### 2.4 Infinite by Default
 
-Session state MUST be fully serializable:
+UAP SHALL NOT impose artificial execution limits. Default behavior is unbounded execution:
 
-- Complete recovery from serialized state
-- Per-step automatic checkpoints
-- Sub-agent state included in parent serialization
-- Thread tree structure preserved
+- `maxIterations`: `Infinity` (not 10)
+- `maxSteps`: `Infinity` (not 10)
+- `timeout`: `undefined` (no timeout)
 
-```pseudocode
-// Save session state
-json = session.toJSON()
-await storage.save(`session:${session.id}`, json)
+**Rationale:** UAP is a pipe, not a nanny. The model should complete tasks based on its own internal logic. Artificial ceilings create unexpected truncation and incomplete results.
 
-// Restore later, even after process restart
-saved = await storage.load(`session:${session.id}`)
-restored = Session.fromJSON(saved, agent)
-turn = await restored.run("Continue from where we left off")
-```
-
-**Rationale:** Long-running agent tasks need persistence. Checkpoints enable recovery from failures and support pause/resume workflows.
-
-### 2.4 Explicit Control Flow
-
-Like UPP-1.2, UAP favors explicit over magic:
-
-- Clear step boundaries in execution
-- Explicit sub-agent invocation patterns
-- Observable middleware pipeline
-- No hidden state mutations
-
-### 2.5 Progressive Complexity
-
-Simple agents require minimal code. Advanced features are opt-in:
+Developers who want limits MUST explicitly configure them:
 
 ```pseudocode
-// Minimal agent - just model binding
-simple = agent({
-  model: anthropic("claude-haiku-4-20250514"),
+// No limits - model runs until it decides to stop
+agent({
+  model: anthropic("claude-sonnet-4-20250514"),
+  execution: react(),  // maxSteps: Infinity by default
 })
 
-// Full configuration with all features
-advanced = agent({
+// Developer explicitly sets limits
+agent({
   model: anthropic("claude-sonnet-4-20250514"),
-  params: { max_tokens: 4096 },
-  config: { apiKey: env.ANTHROPIC_API_KEY },
-  execution: react({ maxSteps: 20 }),
-  tools: [Bash, Read, Write],
-  system: "You are a coding assistant.",
-  middleware: [logging()],
+  execution: react({ maxSteps: 20 }),  // Explicit limit
   strategy: {
-    stopCondition: (state) => state.metadata.taskComplete,
-    onStepEnd: (step, result) => console.log(`Step ${step} complete`),
+    stopCondition: (state) => state.metadata.budget > 10000,  // Custom limit
   },
 })
 ```
 
-### 2.6 Parallel Execution
+### 2.5 Developer Responsibility
 
-Tool and sub-agent calls execute in parallel by default when multiple are requested simultaneously. This maximizes throughput for independent operations.
+UAP places full control and full responsibility with the developer:
 
-Tools MUST be thread-safe to support concurrent execution. Implementations MAY provide configuration to enforce sequential execution when needed.
+- The protocol provides orchestration primitives
+- The developer provides safety constraints
+- Runaway agents are a developer concern, not a protocol concern
+- Resource exhaustion is a deployment concern, not a protocol concern
+
+This is analogous to how operating systems provide `fork()` without limiting process count—the administrator manages resources.
+
+### 2.6 Explicit Sub-Agent Declaration
+
+Sub-agents are tools. Tools require explicit schemas. Therefore, sub-agents require explicit schemas.
+
+UAP MUST NOT auto-generate tool schemas from agent definitions. This prevents:
+
+- Leaky abstractions from system prompt inference
+- Unpredictable behavior from schema guessing
+- Hidden coupling between parent and child agents
+
+```pseudocode
+// CORRECT: Explicit sub-agent tool declaration
+explorer = agent({
+  model: anthropic("claude-haiku-4-20250514"),
+  tools: [Glob, Grep, Read],
+})
+
+// Must explicitly define the tool interface
+explorerTool: Tool = {
+  name: "explore_codebase",
+  description: "Explores and analyzes codebase structure",
+  parameters: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "What to explore" },
+      depth: { type: "number", description: "Search depth" },
+    },
+    required: ["query"],
+  },
+  run: async (params) => {
+    { turn } = await explorer.generate(params.query, AgentState.initial())
+    return turn.response.text
+  },
+}
+
+// INCORRECT: Magic schema generation
+explorerTool = explorer.toTool()  // DO NOT DO THIS
+```
 
 ---
 
@@ -256,22 +306,21 @@ Tools MUST be thread-safe to support concurrent execution. Implementations MAY p
 +-----------------------------------------------------------------------+
 |                        Application Code                                |
 +-----------------------------------------------------------------------+
-            |                    |                    |
-            v                    v                    v
-     +-------------+      +-------------+      +-------------+
-     |   agent()   |      |  session()  |      | ask/query   |
-     |             |      |             |      |             |
-     +-------------+      +-------------+      +-------------+
-            |                    |                    |
-            v                    v                    v
+            |
+            v
+     +-------------+
+     |   agent()   |  generate(input, state) -> { turn, state }
+     +-------------+
+            |
+            v
 +-----------------------------------------------------------------------+
 |                       Middleware Pipeline                              |
-|    +----------+  +------------+  +---------+  +---------+             |
-|    | logging  |->| guardrails |->| memory  |->| budget  |             |
-|    +----------+  +------------+  +---------+  +---------+             |
+|    +----------+  +------------+  +---------+                          |
+|    | logging  |->| guardrails |->| budget  |  (ordered, composable)   |
+|    +----------+  +------------+  +---------+                          |
 +-----------------------------------------------------------------------+
-            |                    |
-            v                    v
+            |
+            v
 +-----------------------------------------------------------------------+
 |                     Execution Strategy                                 |
 |    +----------+      +--------+      +--------+                       |
@@ -301,8 +350,8 @@ Tools MUST be thread-safe to support concurrent execution. Implementations MAY p
 UAP implementations MUST provide separate entry points for different functionality:
 
 ```pseudocode
-// Main entry point - core agent functions
-import { agent, session, ask, query } from "agents"
+// Main entry point - agent factory
+import { agent, AgentState } from "agents"
 
 // Execution strategies
 import { loop, react, plan } from "agents/execution"
@@ -318,42 +367,44 @@ import openai from "upp/openai"
 
 ### 3.3 Data Flow
 
-1. Application calls `agent.run()` or `session.run()`
-2. Middleware pipeline processes the request (pre-hooks)
-3. Execution strategy determines step sequence
-4. Each step invokes `llm.generate()` or `llm.stream()` from UPP-1.2
-5. Tool calls trigger tool execution (including sub-agents)
-6. Execution strategy evaluates stop conditions
-7. Middleware pipeline processes the result (post-hooks)
-8. Session creates checkpoint (if enabled)
-9. Application receives standard UPP `Turn` result
+The functional data flow:
+
+```
+Input + State₀  →  Agent.generate()  →  Turn + State₁
+                        │
+                        ├── Middleware.before(context)
+                        │
+                        ├── Strategy.execute()
+                        │       │
+                        │       ├── llm.generate() [UPP]
+                        │       │
+                        │       ├── Tool execution (parallel/sequential)
+                        │       │
+                        │       └── Step hooks
+                        │
+                        └── Middleware.after(context, turn)
+```
+
+Each call is stateless from the agent's perspective—all state is passed in and returned explicitly.
 
 ### 3.4 Identity Model
 
-All agent actions MUST have UUIDv4 identifiers for serialization and tracking:
+All agent entities MUST have UUIDv4 identifiers:
 
 | Entity | ID Field | Description |
 |--------|----------|-------------|
 | Agent | `agent.id` | Unique agent instance ID |
-| Session | `session.id` | Unique session ID |
+| AgentState | `state.id` | State snapshot ID |
 | Step | `step.id` | Unique step ID within execution |
-| Thread | `thread.id` | Thread ID (from UPP Thread) |
-| Checkpoint | `checkpoint.id` | Checkpoint ID |
 
-**Turn Identity Extension:**
-
-UAP extends turn tracking with parent-child relationships. This is tracked via metadata, not by modifying the Turn type:
+Turn identity comes from UPP. UAP tracks execution context separately:
 
 ```pseudocode
-// Parent agent produces turn
-parentTurn = await coder.run("Explore and implement")
-// parentTurn returned as-is from UPP
-
-// Track parent-child via execution context, not turn modification
-// Sub-agent execution receives parentTurnId in context
-subAgentContext = {
-  parentTurnId: getContextTurnId(),
-  agentId: subAgent.id,
+// Execution context tracks lineage
+context = {
+  agentId: agent.id,
+  stateId: state.id,
+  parentContext?: parentContext,  // For sub-agent calls
 }
 ```
 
@@ -375,11 +426,13 @@ agent(options: AgentOptions) -> Agent
 | `params` | Map | No | Model-specific parameters (passed to llm()) |
 | `config` | ProviderConfig | No | Provider infrastructure configuration |
 | `execution` | ExecutionStrategy | No | Execution strategy (default: loop()) |
-| `tools` | List<Tool \| Agent> | No | Tools and sub-agents available to the agent |
+| `tools` | List<Tool> | No | Tools available to the agent |
 | `system` | String | No | System prompt |
 | `structure` | JSONSchema | No | Structured output schema |
 | `middleware` | List<Middleware> | No | Ordered middleware pipeline |
 | `strategy` | AgentStrategy | No | Agent lifecycle hooks |
+
+**Note:** The `tools` field accepts only `Tool` objects. Sub-agents must be explicitly converted to tools with defined schemas (see Section 8).
 
 ### 4.3 Agent Interface
 
@@ -387,107 +440,153 @@ agent(options: AgentOptions) -> Agent
 |-----------------|------|-------------|
 | `id` | String | Unique agent identifier (UUIDv4) |
 | `model` | ModelReference | The bound model |
-| `tools` | List<Tool \| Agent> | Available tools and sub-agents |
+| `tools` | List<Tool> | Available tools |
 | `system` | String? | System prompt |
-| `run(input)` | Function | Execute agent and return Turn |
-| `stream(input)` | Function | Execute agent with streaming |
-| `toTool()` | Function | Convert agent to Tool for use as sub-agent |
+| `generate(input, state)` | Function | Execute agent, return Turn and new state |
+| `stream(input, state)` | Function | Execute agent with streaming |
+| `ask(input, state)` | Function | Multi-turn execution, history preserved |
+| `query(input)` | Function | Stateless single-turn execution |
 
-**run() Overloads:**
+### 4.4 generate() Method
+
+The primary execution method. Follows the functional pattern `(Input, State) -> (Turn, NewState)`.
+
+**Signature:**
 
 ```pseudocode
-// Without history
-run(input: String | Message) -> Promise<Turn>
-
-// With history
-run(history: List<Message> | Thread, input: String | Message) -> Promise<Turn>
+generate(input: String | Message, state: AgentState) -> Promise<GenerateResult>
 ```
 
-**stream() Overloads:**
+**GenerateResult Structure:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `turn` | Turn | Standard UPP Turn |
+| `state` | AgentState | New immutable state |
+
+**Usage:**
 
 ```pseudocode
-// Without history
-stream(input: String | Message) -> AgentStreamResult
-
-// With history
-stream(history: List<Message> | Thread, input: String | Message) -> AgentStreamResult
-```
-
-### 4.4 Basic Usage
-
-```pseudocode
-import { agent } from "agents"
+import { agent, AgentState } from "agents"
 import anthropic from "upp/anthropic"
 
 coder = agent({
   model: anthropic("claude-sonnet-4-20250514"),
-  params: { max_tokens: 4096 },
-  system: "You are a coding assistant.",
   tools: [Bash, Read, Write],
+  system: "You are a coding assistant.",
 })
 
-// Simple execution - returns standard UPP Turn
-turn = await coder.run("Implement a fibonacci function in TypeScript")
-print(turn.response.text)
+// Initialize state
+state0 = AgentState.initial()
 
-// With history
-history = []
-turn1 = await coder.run(history, "My name is Alice")
-history.push(...turn1.messages)
-turn2 = await coder.run(history, "What is my name?")
+// First generation
+{ turn: turn1, state: state1 } = await coder.generate(
+  "Create a hello world program",
+  state0
+)
+print(turn1.response.text)
+
+// Second generation with updated state
+{ turn: turn2, state: state2 } = await coder.generate(
+  "Add error handling",
+  state1
+)
 ```
 
-### 4.5 Agent with Execution Strategy
+### 4.5 stream() Method
+
+Streaming execution with the same functional pattern.
+
+**Signature:**
 
 ```pseudocode
-import { agent } from "agents"
-import { react } from "agents/execution"
-import anthropic from "upp/anthropic"
-
-coder = agent({
-  model: anthropic("claude-sonnet-4-20250514"),
-  execution: react({ maxSteps: 20 }),
-  tools: [Bash, Read, Write, Glob, Grep],
-  system: "You are a coding assistant. Think step by step.",
-})
-
-turn = await coder.run("Find and fix all TypeScript errors in the project")
+stream(input: String | Message, state: AgentState) -> AgentStreamResult
 ```
 
-### 4.6 Agent with Structured Output
+**AgentStreamResult:**
+
+- Async iterable of `AgentStreamEvent`
+- `result: Promise<GenerateResult>` - resolves after completion
+- `abort(): void` - cancel the stream
 
 ```pseudocode
-import { agent } from "agents"
-import anthropic from "upp/anthropic"
+stream = coder.stream("Implement a feature", state0)
 
-analyzer = agent({
-  model: anthropic("claude-sonnet-4-20250514"),
-  system: "You analyze code and report issues.",
-  structure: {
-    type: "object",
-    properties: {
-      issues: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            file: { type: "string" },
-            line: { type: "number" },
-            severity: { type: "string", enum: ["error", "warning", "info"] },
-            message: { type: "string" },
-          },
-          required: ["file", "line", "severity", "message"],
-        },
-      },
-      summary: { type: "string" },
-    },
-    required: ["issues", "summary"],
-  },
-})
+for await (event of stream) {
+  // Process events
+}
 
-turn = await analyzer.run("Analyze this code: ...")
-print(turn.data)  // Structured data from UPP Turn
-// { issues: [...], summary: "..." }
+{ turn, state: newState } = await stream.result
+```
+
+### 4.6 ask() Method
+
+Multi-turn execution where history is preserved in state. This is a convenience method that:
+1. Appends input to state history
+2. Calls generate()
+3. Appends response to returned state
+
+**Signature:**
+
+```pseudocode
+ask(input: String | Message, state: AgentState) -> Promise<GenerateResult>
+```
+
+**Usage:**
+
+```pseudocode
+state0 = AgentState.initial()
+
+// ask() automatically manages conversation history
+{ turn: t1, state: s1 } = await agent.ask("My name is Alice", state0)
+{ turn: t2, state: s2 } = await agent.ask("What is my name?", s1)
+// t2.response.text contains "Alice" - context preserved
+```
+
+**Equivalence:**
+
+```pseudocode
+// ask() is equivalent to:
+ask(input, state) {
+  newState = state.withMessage(UserMessage(input))
+  result = await this.generate(input, newState)
+  return {
+    turn: result.turn,
+    state: result.state.withMessages(result.turn.messages),
+  }
+}
+```
+
+### 4.7 query() Method
+
+Stateless single-turn execution. Creates ephemeral state, executes, and discards state. Useful for one-off questions that don't need context.
+
+**Signature:**
+
+```pseudocode
+query(input: String | Message) -> Promise<Turn>
+```
+
+**Usage:**
+
+```pseudocode
+// No state management needed
+turn = await agent.query("What is 2 + 2?")
+print(turn.response.text)  // "4"
+
+// State is not preserved - each query is independent
+turn2 = await agent.query("What did I just ask?")
+// turn2 has no context from turn1
+```
+
+**Equivalence:**
+
+```pseudocode
+// query() is equivalent to:
+query(input) {
+  { turn } = await this.generate(input, AgentState.initial())
+  return turn
+}
 ```
 
 ---
@@ -498,9 +597,9 @@ print(turn.data)  // Structured data from UPP Turn
 
 ```pseudocode
 interface ExecutionStrategy {
-  name: String                                              // Strategy identifier
-  execute(context: ExecutionContext) -> Promise<Turn>       // Execute and return Turn
-  stream(context: ExecutionContext) -> AgentStreamResult    // Streaming execution
+  name: String
+  execute(context: ExecutionContext) -> Promise<ExecutionResult>
+  stream(context: ExecutionContext) -> AgentStreamResult
 }
 ```
 
@@ -511,25 +610,21 @@ interface ExecutionStrategy {
 | `agent` | Agent | The agent being executed |
 | `llm` | LLMInstance | The bound LLM instance |
 | `input` | Message | The user input message |
-| `history` | List<Message> | Conversation history |
-| `tools` | List<Tool> | Resolved tools (including sub-agent tools) |
+| `state` | AgentState | Current immutable state |
+| `tools` | List<Tool> | Resolved tools |
 | `strategy` | AgentStrategy | Agent lifecycle hooks |
 | `signal` | AbortSignal? | Abort signal for cancellation |
-| `state` | ExecutionState | Mutable execution state |
 
-**ExecutionState Structure:**
+**ExecutionResult Structure:**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `step` | Integer | Current step number |
-| `messages` | List<Message> | Messages accumulated in this execution |
-| `metadata` | Map | User-defined metadata (for stop conditions) |
-| `reasoning` | List<String>? | Reasoning traces (for ReAct) |
-| `plan` | List<PlanStep>? | Execution plan (for Plan strategy) |
+| `turn` | Turn | The complete UPP Turn |
+| `state` | AgentState | New immutable state |
 
 ### 5.2 loop() Strategy
 
-The simplest strategy - equivalent to UPP's tool loop behavior.
+The simplest strategy—equivalent to UPP's tool loop behavior.
 
 ```pseudocode
 loop(options?: LoopOptions) -> ExecutionStrategy
@@ -539,29 +634,32 @@ loop(options?: LoopOptions) -> ExecutionStrategy
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `maxIterations` | Integer | 10 | Maximum tool execution rounds |
+| `maxIterations` | Integer | Infinity | Maximum tool execution rounds |
 
 **Behavior:**
 
 1. Send input to LLM
 2. If response has tool calls, execute tools and loop
-3. Continue until no tool calls or max iterations
+3. Continue until no tool calls or max iterations (if set)
 4. Return final response as UPP Turn
-
-This strategy MUST behave identically to UPP's `llm.generate()` with `toolStrategy.maxIterations`.
 
 ```pseudocode
 import { agent } from "agents"
 import { loop } from "agents/execution"
-import anthropic from "upp/anthropic"
 
+// Infinite by default - loops until model stops calling tools
 simple = agent({
-  model: anthropic("claude-haiku-4-20250514"),
-  execution: loop({ maxIterations: 5 }),
+  model: anthropic("claude-sonnet-4-20250514"),
+  execution: loop(),  // maxIterations: Infinity
   tools: [calculator],
 })
 
-turn = await simple.run("What is 2 + 2?")
+// Explicit limit when needed
+limited = agent({
+  model: anthropic("claude-sonnet-4-20250514"),
+  execution: loop({ maxIterations: 5 }),
+  tools: [calculator],
+})
 ```
 
 ### 5.3 react() Strategy
@@ -576,94 +674,65 @@ react(options?: ReactOptions) -> ExecutionStrategy
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `maxSteps` | Integer | 10 | Maximum reason-act-observe cycles |
+| `maxSteps` | Integer | Infinity | Maximum reason-act-observe cycles |
 | `reasoningPrompt` | String | (default) | Prompt suffix for reasoning phase |
-| `observationFormat` | String | "markdown" | Format for observations |
 
 **Behavior:**
 
 1. **Reason**: LLM outputs reasoning about what to do next
 2. **Act**: LLM selects and executes tool(s)
 3. **Observe**: Tool results are formatted as observations
-4. Repeat until stop condition or max steps
+4. Repeat until stop condition, no more actions, or max steps (if set)
 
 **Step Lifecycle:**
 
 ```pseudocode
-for step in 1..maxSteps {
-  state.step = step
-  strategy.onStepStart?.(step, state)
+step = 0
+while (true) {
+  step++
+  newState = state.withStep(step)
+  strategy.onStepStart?.(step, newState)
 
   // Reason phase
   reasoningTurn = await llm.generate(
-    buildHistory(state),
-    "Think about what to do next. What is your reasoning?"
+    buildHistory(newState),
+    "Think about what to do next."
   )
   reasoning = reasoningTurn.response.text
-  state.reasoning.push(reasoning)
+  newState = newState.withReasoning(reasoning)
   strategy.onReason?.(step, reasoning)
 
   // Act phase
   actionTurn = await llm.generate(
-    buildHistory(state),
-    "Based on your reasoning, take action using available tools."
+    buildHistory(newState),
+    "Based on your reasoning, take action."
   )
 
   if (actionTurn.response.hasToolCalls) {
     strategy.onAct?.(step, actionTurn.response.toolCalls)
-
-    // Tools executed by UPP core, results in turn
-    observations = formatObservations(actionTurn.toolExecutions)
-    strategy.onObserve?.(step, observations)
+    // Tool execution happens via UPP
+    strategy.onObserve?.(step, actionTurn.toolExecutions)
   }
 
-  state.messages.push(...actionTurn.messages)
-  strategy.onStepEnd?.(step, { turn: actionTurn, state })
+  newState = newState.withMessages(actionTurn.messages)
+  strategy.onStepEnd?.(step, { turn: actionTurn, state: newState })
 
-  // Check stop condition
-  if (strategy.stopCondition?.(state)) break
+  // Check termination
+  if (strategy.stopCondition?.(newState)) break
   if (!actionTurn.response.hasToolCalls) break
+  // Note: No maxSteps check if maxSteps is Infinity
+  if (options.maxSteps !== Infinity && step >= options.maxSteps) break
 }
 
-return buildFinalTurn(state)
+return { turn: buildFinalTurn(newState), state: newState }
 ```
 
-**MUST Requirements for react():**
+**MUST Requirements:**
 
 1. MUST emit `onReason`, `onAct`, `onObserve` hooks at appropriate phases
-2. MUST track reasoning in `state.reasoning` array
-3. MUST respect `maxSteps` limit
-4. MUST call `stopCondition` after each step
-5. MUST return a valid UPP Turn
-
-**SHOULD Requirements for react():**
-
-1. SHOULD support custom reasoning prompts
-2. SHOULD format observations consistently
-3. SHOULD aggregate token usage across all steps
-
-```pseudocode
-import { agent } from "agents"
-import { react } from "agents/execution"
-import anthropic from "upp/anthropic"
-
-researcher = agent({
-  model: anthropic("claude-sonnet-4-20250514"),
-  execution: react({ maxSteps: 15 }),
-  tools: [WebSearch, Read, Summarize],
-  system: "You are a research assistant. Think carefully before acting.",
-  strategy: {
-    onReason: (step, reasoning) => {
-      print(`[Step ${step}] Reasoning: ${reasoning.substring(0, 100)}...`)
-    },
-    onAct: (step, actions) => {
-      for (action in actions) {
-        print(`[Step ${step}] Action: ${action.toolName}`)
-      }
-    },
-  },
-})
-```
+2. MUST track reasoning in state
+3. MUST call `stopCondition` after each step
+4. MUST NOT impose artificial limits unless explicitly configured
 
 ### 5.4 plan() Strategy
 
@@ -677,7 +746,7 @@ plan(options?: PlanOptions) -> ExecutionStrategy
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `maxPlanSteps` | Integer | 10 | Maximum steps in a plan |
+| `maxPlanSteps` | Integer | Infinity | Maximum steps in a plan |
 | `allowReplan` | Boolean | true | Allow replanning on failure |
 | `planSchema` | JSONSchema | (default) | Schema for plan structure |
 
@@ -693,61 +762,16 @@ plan(options?: PlanOptions) -> ExecutionStrategy
 
 **Behavior:**
 
-1. **Plan**: LLM generates structured plan with steps
-2. **Execute**: Execute each plan step in order (respecting dependencies)
+1. **Plan**: LLM generates structured plan with steps and dependencies
+2. **Execute**: Execute each plan step respecting dependency order
 3. **Replan**: If a step fails and `allowReplan`, generate new plan
 
-```pseudocode
-// Planning phase
-planTurn = await llm.generate(
-  history,
-  input,
-  { structure: planSchema }
-)
-plan = planTurn.data.steps
-state.plan = plan
-
-// Execution phase
-for step in topologicalSort(plan) {
-  step.status = "in_progress"
-  strategy.onStepStart?.(step.id, state)
-
-  if (step.tool) {
-    result = await executeTool(step.tool, step)
-    if (result.isError && options.allowReplan) {
-      // Generate new plan from current state
-      plan = await replan(state, result.error)
-      continue
-    }
-  }
-
-  step.status = "completed"
-  strategy.onStepEnd?.(step.id, result)
-}
-```
-
-**MUST Requirements for plan():**
+**MUST Requirements:**
 
 1. MUST produce structured plan via structured output
 2. MUST respect step dependencies (topological order)
-3. MUST track plan in `state.plan`
+3. MUST track plan in state
 4. MUST update step status during execution
-5. MUST return a valid UPP Turn
-
-```pseudocode
-import { agent } from "agents"
-import { plan } from "agents/execution"
-import anthropic from "upp/anthropic"
-
-architect = agent({
-  model: anthropic("claude-sonnet-4-20250514"),
-  execution: plan({ maxPlanSteps: 10, allowReplan: true }),
-  tools: [Read, Write, Bash, Test],
-  system: "You are a software architect. Plan before implementing.",
-})
-
-turn = await architect.run("Refactor the authentication module")
-```
 
 ### 5.5 Custom Strategies
 
@@ -758,140 +782,113 @@ customStrategy: ExecutionStrategy = {
   name: "custom",
 
   execute: async (context) => {
-    { agent, llm, input, history, strategy, state } = context
+    { agent, llm, input, state, strategy } = context
 
     strategy.onStepStart?.(1, state)
 
     // Custom execution logic
-    turn = await llm.generate(history, input)
-    state.messages.push(...turn.messages)
+    turn = await llm.generate(state.messages, input)
+    newState = state.withMessages(turn.messages)
 
-    strategy.onStepEnd?.(1, { turn, state })
+    strategy.onStepEnd?.(1, { turn, state: newState })
 
-    return turn  // Return standard UPP Turn
+    return { turn, state: newState }
   },
 
   stream: (context) => {
     // Streaming implementation
-    // Must return AgentStreamResult
   },
 }
-
-customAgent = agent({
-  model: anthropic("claude-sonnet-4-20250514"),
-  execution: customStrategy,
-})
 ```
 
 ---
 
-## 6. Sessions
+## 6. Functional State Management
 
-### 6.1 Session Interface
+### 6.1 AgentState Structure
 
-Sessions wrap agents with persistent state and checkpoints.
-
-```pseudocode
-session(agent: Agent, options?: SessionOptions) -> Session
-```
-
-**SessionOptions Structure:**
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `id` | String | (generated) | Session ID (UUIDv4) |
-| `checkpoints` | Boolean | true | Enable automatic checkpoints |
-| `checkpointInterval` | String | "step" | When to checkpoint: "step" or "turn" |
-| `persistence` | PersistenceAdapter | (memory) | Storage adapter |
-| `metadata` | Map | {} | Session metadata |
-
-**Session Interface:**
-
-| Property/Method | Type | Description |
-|-----------------|------|-------------|
-| `id` | String | Session ID (UUIDv4) |
-| `agent` | Agent | The wrapped agent |
-| `threadTree` | ThreadTree | The thread tree |
-| `checkpoints` | List<Checkpoint> | All checkpoints |
-| `currentCheckpoint` | Checkpoint? | Latest checkpoint |
-| `run(input)` | Function | Run agent with session state |
-| `stream(input)` | Function | Stream agent with session state |
-| `fork(threadId)` | Function | Create branch from thread |
-| `restore(checkpointId)` | Function | Restore to checkpoint |
-| `save()` | Function | Explicitly save session |
-| `toJSON()` | Function | Serialize session |
-
-### 6.2 Session Usage
-
-```pseudocode
-import { agent, session } from "agents"
-import anthropic from "upp/anthropic"
-
-coder = agent({
-  model: anthropic("claude-sonnet-4-20250514"),
-  tools: [Bash, Read, Write],
-})
-
-// Create session
-sess = session(coder, {
-  checkpoints: true,
-  checkpointInterval: "step",
-})
-
-// Run with automatic state management
-turn1 = await sess.run("Create a hello world program")
-// Checkpoint automatically created after each step
-
-turn2 = await sess.run("Add error handling")
-// Another checkpoint created
-
-// View checkpoints
-print(sess.checkpoints.length)  // Multiple checkpoints
-
-// Restore to earlier state
-await sess.restore(sess.checkpoints[0].id)
-
-// Continue from restored state (branches the thread tree)
-turn3 = await sess.run("Add logging instead")
-```
-
-### 6.3 Session Persistence
-
-```pseudocode
-// Save session
-json = sess.toJSON()
-await storage.set(`session:${sess.id}`, json)
-
-// Later: restore session
-saved = await storage.get(`session:${sess.id}`)
-restored = Session.fromJSON(saved, coder)
-
-// Continue where we left off
-turn = await restored.run("Continue from before")
-```
-
-### 6.4 Checkpoint Structure
+`AgentState` is an immutable snapshot of agent execution state.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | String | Checkpoint ID (UUIDv4) |
-| `sessionId` | String | Parent session ID |
-| `timestamp` | String | ISO 8601 timestamp |
-| `step` | Integer | Step number at checkpoint |
-| `threadId` | String | Active thread ID |
-| `state` | ExecutionState | Serialized execution state |
-| `subAgentStates` | Map | Sub-agent session states |
-| `metadata` | Map | Checkpoint metadata |
+| `id` | String | State snapshot ID (UUIDv4) |
+| `messages` | List<Message> | Conversation history (UPP Messages) |
+| `step` | Integer | Current step number |
+| `metadata` | Map | User-defined metadata |
+| `reasoning` | List<String> | Reasoning traces (for ReAct) |
+| `plan` | List<PlanStep>? | Execution plan (for Plan strategy) |
 
-### 6.5 MUST Requirements for Sessions
+### 6.2 State Operations
 
-1. Sessions MUST serialize all state including sub-agent state
-2. Sessions MUST preserve thread tree structure across serialization
-3. Checkpoints MUST capture complete recoverable state
-4. `restore()` MUST bring session to exact checkpoint state
-5. `checkpointInterval: "step"` MUST checkpoint after every execution step
-6. All session IDs MUST be UUIDv4
-7. Timestamps MUST use ISO 8601 format
+All state operations return new state instances:
+
+```pseudocode
+interface AgentState {
+  // Factory
+  static initial() -> AgentState
+
+  // Immutable operations - all return new AgentState
+  withMessage(message: Message) -> AgentState
+  withMessages(messages: List<Message>) -> AgentState
+  withStep(step: Integer) -> AgentState
+  withMetadata(key: String, value: Any) -> AgentState
+  withReasoning(reasoning: String) -> AgentState
+  withPlan(plan: List<PlanStep>) -> AgentState
+
+  // Serialization
+  toJSON() -> AgentStateJSON
+  static fromJSON(json: AgentStateJSON) -> AgentState
+}
+```
+
+### 6.3 State Flow Example
+
+```pseudocode
+// Initialize
+s0 = AgentState.initial()
+// s0 = { id: "uuid-1", messages: [], step: 0, metadata: {}, reasoning: [] }
+
+// First interaction
+{ turn: t1, state: s1 } = await agent.generate("Hello", s0)
+// s1 = { id: "uuid-2", messages: [...t1.messages], step: 1, ... }
+
+// s0 is unchanged - can branch
+{ turn: t2a, state: s2a } = await agent.generate("Option A", s0)
+{ turn: t2b, state: s2b } = await agent.generate("Option B", s0)
+
+// Continue from s1
+{ turn: t2, state: s2 } = await agent.generate("Continue", s1)
+
+// Inspect any state at any time
+print(s0.messages)  // []
+print(s1.messages)  // [user, assistant from t1]
+print(s2.messages)  // [user, assistant from t1, user, assistant from t2]
+```
+
+### 6.4 State Serialization
+
+State serializes to JSON for persistence:
+
+```pseudocode
+// Save state
+json = state.toJSON()
+await storage.save(`state:${state.id}`, JSON.stringify(json))
+
+// Restore state
+saved = JSON.parse(await storage.load(`state:${state.id}`))
+restored = AgentState.fromJSON(saved)
+
+// Continue from restored state
+{ turn, state: newState } = await agent.generate("Continue", restored)
+```
+
+### 6.5 MUST Requirements for State
+
+1. `AgentState` MUST be immutable—operations return new instances
+2. State operations MUST NOT mutate the original state
+3. Each state MUST have a unique ID
+4. State MUST be fully serializable via `toJSON()`
+5. `fromJSON()` MUST restore exact state
 
 ---
 
@@ -899,19 +896,18 @@ turn = await restored.run("Continue from before")
 
 ### 7.1 Thread Tree Structure
 
-UAP extends UPP's Thread with tree structure for branching conversations.
+Thread trees provide optional tree-structured conversation management. They are built on `AgentState` and provide branching/merging utilities.
 
 **ThreadTree Interface:**
 
 | Property/Method | Type | Description |
 |-----------------|------|-------------|
-| `root` | ThreadNode | Root thread node |
-| `current` | ThreadNode | Currently active thread node |
+| `root` | ThreadNode | Root node |
+| `current` | ThreadNode | Currently active node |
 | `nodes` | Map<String, ThreadNode> | All nodes by ID |
-| `branch(fromId, name?)` | Function | Create branch from node |
+| `branch(fromId, name?)` | Function | Create branch, returns node ID |
 | `checkout(nodeId)` | Function | Switch active node |
-| `merge(sourceId, targetId)` | Function | Merge threads |
-| `history()` | Function | Get messages from root to current |
+| `history()` | Function | Get AgentState from root to current |
 | `toJSON()` | Function | Serialize tree |
 
 **ThreadNode Structure:**
@@ -920,323 +916,235 @@ UAP extends UPP's Thread with tree structure for branching conversations.
 |-------|------|-------------|
 | `id` | String | Node ID (UUIDv4) |
 | `parentId` | String? | Parent node ID (null for root) |
-| `thread` | Thread | UPP Thread instance |
+| `state` | AgentState | State snapshot at this node |
 | `name` | String? | Optional branch name |
-| `metadata` | Map | Node metadata |
 | `children` | List<String> | Child node IDs |
 
 ### 7.2 Thread Tree Usage
 
 ```pseudocode
-import { ThreadTree } from "agents"
+import { ThreadTree, AgentState } from "agents"
 
-// Create thread tree
+// Create tree
 tree = new ThreadTree()
 
-// Messages go to current node's thread
-turn1 = await agent.run(tree.history(), "Create a web server")
-tree.current.thread.append(turn1)
+// Generate and update tree
+{ turn: t1, state: s1 } = await agent.generate("First", tree.history())
+tree.current.state = s1
 
-// Branch for alternative approach
-altBranchId = tree.branch(tree.current.id, "alternative-framework")
-tree.checkout(altBranchId)
+// Branch for alternative
+altId = tree.branch(tree.current.id, "alternative")
+tree.checkout(altId)
 
-// This continues from the branch point
-turn2 = await agent.run(tree.history(), "Use Express instead")
-tree.current.thread.append(turn2)
+{ turn: t2, state: s2 } = await agent.generate("Alternative path", tree.history())
+tree.current.state = s2
 
-// Switch back to original branch
+// Switch back to main
 tree.checkout(tree.root.id)
-
-// Continue original approach
-turn3 = await agent.run(tree.history(), "Add middleware")
-tree.current.thread.append(turn3)
 ```
 
 ### 7.3 History Traversal
 
-The `history()` method returns all messages from root to current node:
+`history()` returns an `AgentState` containing all messages from root to current:
 
 ```pseudocode
-// Tree structure:
-//   root -> A -> B (current)
-//        -> C -> D
-
+// Tree: root -> A -> B (current)
 tree.checkout(B.id)
-history = tree.history()
-// Returns messages from: root, A, B
-
-tree.checkout(D.id)
-history = tree.history()
-// Returns messages from: root, C, D
+state = tree.history()
+// state.messages contains messages from root, A, B in order
 ```
-
-### 7.4 MUST Requirements for Thread Trees
-
-1. Thread trees MUST use UPP Thread instances directly
-2. `history()` MUST return messages in chronological order from root to current
-3. All node IDs MUST be UUIDv4
-4. `branch()` MUST create a new node with the specified parent
-5. `checkout()` MUST switch the current node
-6. Serialization MUST preserve complete tree structure
 
 ---
 
 ## 8. Sub-Agent Protocol
 
-### 8.1 Sub-Agent as Tool
+### 8.1 Sub-Agents Are Tools
 
-When an agent is added to another agent's tools, it MUST be converted to a UPP Tool:
+Sub-agents are agents used as tools by other agents. They are **not** special—they are regular UPP Tools with an implementation that calls another agent.
+
+**Critical Requirement:** UAP MUST NOT auto-generate tool schemas from agents. All sub-agent tools require explicit schema declaration.
+
+### 8.2 Explicit Tool Declaration
+
+To use an agent as a sub-agent, the developer MUST create an explicit Tool:
 
 ```pseudocode
+// Define the sub-agent
 explorer = agent({
   model: anthropic("claude-haiku-4-20250514"),
-  system: "You explore and analyze codebases.",
   tools: [Glob, Grep, Read],
+  system: "You explore codebases.",
 })
 
-// Automatic conversion when passed as tool
-coder = agent({
-  model: anthropic("claude-sonnet-4-20250514"),
-  tools: [
-    Bash,
-    Write,
-    explorer,  // Automatically converted via toTool()
-  ],
-})
-```
-
-### 8.2 Tool Conversion
-
-**toTool() Method:**
-
-```pseudocode
-agent.toTool(options?: ToToolOptions) -> Tool
-```
-
-**ToToolOptions Structure:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | String? | Custom tool name (default: agent ID) |
-| `description` | String? | Custom description |
-| `parameterSchema` | JSONSchema? | Custom parameter schema |
-
-**Generated Tool Structure:**
-
-```pseudocode
-{
-  name: options.name ?? `agent_${agent.id}`,
-
-  description: options.description ?? generateFromSystem(agent.system),
-
-  parameters: options.parameterSchema ?? {
+// Explicitly define the tool interface
+explorerTool: Tool = {
+  name: "explore_codebase",
+  description: "Explores codebase structure and finds relevant files",
+  parameters: {
     type: "object",
     properties: {
-      task: {
+      query: {
         type: "string",
-        description: "The task for the sub-agent to perform"
-      }
+        description: "What to search for in the codebase",
+      },
+      fileTypes: {
+        type: "array",
+        items: { type: "string" },
+        description: "File extensions to include (e.g., ['.ts', '.js'])",
+      },
     },
-    required: ["task"]
+    required: ["query"],
   },
-
   run: async (params) => {
-    turn = await agent.run(params.task)
+    prompt = `Find: ${params.query}`
+    if (params.fileTypes) {
+      prompt += ` in files: ${params.fileTypes.join(", ")}`
+    }
+    turn = await explorer.query(prompt)
     return turn.response.text
+  },
+}
+
+// Use in parent agent
+coder = agent({
+  model: anthropic("claude-sonnet-4-20250514"),
+  tools: [Bash, Write, explorerTool],
+})
+```
+
+### 8.3 Why No Auto-Generation
+
+Auto-generating tool schemas from agent definitions violates UAP principles:
+
+1. **Leaky Abstraction**: System prompts may contain instructions not suitable for tool descriptions
+2. **Unpredictable Schema**: No reliable way to infer parameter structure from an agent
+3. **Hidden Coupling**: Changes to sub-agent system prompt would silently change tool interface
+4. **Type Unsafety**: Auto-generated schemas can't be statically verified
+
+The explicit approach ensures:
+
+- Tool interface is intentionally designed
+- Schema matches actual sub-agent capabilities
+- Changes require explicit updates
+- TypeScript/static typing can verify schemas
+
+### 8.4 LLM Inheritance
+
+Sub-agents inherit parent LLM configuration when not explicitly specified.
+
+**Implementation Note:** UPP `Tool.run` functions receive only `params`. UAP's `ExecutionStrategy` MUST inject execution context when invoking tools. This is done by wrapping tool execution:
+
+```pseudocode
+// UAP ExecutionStrategy wraps tool invocation
+async function executeTool(tool: Tool, params: Map, context: ExecutionContext) {
+  // If tool needs context (e.g., for inheritance), wrap the call
+  if (tool.run.length > 1) {
+    // Tool expects context as second argument
+    return tool.run(params, {
+      parentModel: context.agent.model,
+      parentConfig: context.agent.config,
+      agentId: context.agent.id,
+      stateId: context.state.id,
+    })
   }
+  // Standard UPP tool - params only
+  return tool.run(params)
 }
 ```
 
-### 8.3 LLM Inheritance
-
-Sub-agents inherit the parent's LLM configuration by default:
+**Sub-agent tool with inheritance:**
 
 ```pseudocode
-// Sub-agent without explicit model - inherits from parent
+// Sub-agent without explicit model
 helper = agent({
   // model not specified
-  system: "You help with small tasks.",
   tools: [Read],
+  system: "You help with tasks.",
 })
 
-// Parent with explicit model
-main = agent({
-  model: anthropic("claude-sonnet-4-20250514"),
-  tools: [helper],  // helper will use claude-sonnet-4-20250514
-})
-
-// Sub-agent with explicit model - never inherits
-researcher = agent({
-  model: anthropic("claude-haiku-4-20250514"),  // Always uses haiku
-  system: "You research topics.",
-})
+// Tool explicitly handles inheritance via context
+helperTool: Tool = {
+  name: "helper",
+  description: "...",
+  parameters: { ... },
+  run: async (params, context) => {
+    // context injected by UAP ExecutionStrategy
+    effectiveAgent = helper.model
+      ? helper
+      : agent({ ...helper, model: context.parentModel, config: context.parentConfig })
+    return (await effectiveAgent.query(params.task)).response.text
+  },
+}
 ```
 
-**MUST Requirements for LLM Inheritance:**
+**MUST Requirements:**
 
 1. If sub-agent has explicit `model`, MUST use that model
-2. If sub-agent has no `model`, MUST inherit from parent execution context
-3. Inheritance MUST be resolved at execution time, not definition time
-4. Inherited config (apiKey, baseUrl, etc.) MUST also flow from parent
+2. If sub-agent has no `model`, MAY inherit from parent execution context
+3. Inheritance is resolved at execution time
+4. ExecutionStrategy MUST inject context for tools that declare a second parameter
 
-### 8.4 Parent-Child Tracking
+### 8.5 Execution Dependencies
 
-Sub-agent execution is tracked via the execution context:
+Tools and sub-agents can declare execution dependencies:
+
+**Tool Dependency Options:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `sequential` | Boolean | false | Must complete before other tools start |
+| `dependsOn` | List<String> | [] | Tool names that must complete first |
 
 ```pseudocode
-// When parent agent executes
-parentContext = {
-  agentId: parent.id,
-  turnId: generateUUID(),
+readTool: Tool = {
+  name: "read_file",
+  description: "Read a file",
+  parameters: { ... },
+  sequential: true,  // Other tools wait for this
+  run: async (params) => { ... },
 }
 
-// When sub-agent executes (as tool)
-subContext = {
-  agentId: subAgent.id,
-  turnId: generateUUID(),
-  parentAgentId: parentContext.agentId,
-  parentTurnId: parentContext.turnId,
+writeTool: Tool = {
+  name: "write_file",
+  description: "Write a file",
+  parameters: { ... },
+  dependsOn: ["read_file"],  // Only runs after read_file completes
+  run: async (params) => { ... },
 }
 ```
 
-This tracking enables:
-- Debugging hierarchical agent calls
-- Cost attribution per agent
-- Serialization of complete execution tree
+### 8.6 Model-Driven Execution Order
 
-### 8.5 Concurrent Sub-Agent Execution
-
-When the LLM requests multiple tool calls, sub-agents execute concurrently:
+The model MAY signal execution dependencies in tool calls:
 
 ```pseudocode
-// LLM returns:
-// [
-//   { toolName: "explorer", args: { task: "Find tests" } },
-//   { toolName: "researcher", args: { task: "Research testing patterns" } }
-// ]
+// Model can return structured tool calls with dependencies
+toolCalls = [
+  { id: "call_1", name: "read_file", args: {...} },
+  { id: "call_2", name: "process", args: {...}, after: ["call_1"] },
+  { id: "call_3", name: "write_file", args: {...}, after: ["call_2"] },
+]
 
-// Both execute in parallel:
-results = await Promise.all([
-  explorer.run("Find tests"),
-  researcher.run("Research testing patterns"),
-])
+// Execution respects declared order:
+// 1. read_file executes
+// 2. process executes (after call_1)
+// 3. write_file executes (after call_2)
 ```
 
-Sub-agent tools MUST be safe for concurrent execution.
+If the model does not specify dependencies, tools execute in parallel (default).
 
 ---
 
-## 9. Communication
+## 9. Middleware
 
-### 9.1 ask() - Multi-turn History
-
-```pseudocode
-ask(agent: Agent, input: String | Message, thread?: Thread) -> Promise<Turn>
-```
-
-`ask()` executes an agent and appends the result to the provided thread (or creates a new one):
-
-```pseudocode
-import { ask } from "agents"
-import { Thread } from "upp"
-
-thread = new Thread()
-
-// First question
-turn1 = await ask(explorer, "Find all TypeScript files", thread)
-// turn1.messages appended to thread
-
-// Follow-up (has context from turn1)
-turn2 = await ask(explorer, "Which ones have errors?", thread)
-// turn2.messages appended to thread
-
-// Thread now contains full conversation
-print(thread.messages.length)  // All messages from both turns
-```
-
-**MUST Requirements for ask():**
-
-1. MUST append turn messages to the provided thread
-2. MUST use thread history for context
-3. MUST return standard UPP Turn
-4. If no thread provided, MUST create a new Thread
-
-### 9.2 query() - Reusable Branch
-
-```pseudocode
-query(agent: Agent, input: String | Message) -> Promise<QueryResult>
-```
-
-`query()` creates a separate conversation thread that can be continued later without affecting the main conversation:
-
-```pseudocode
-import { query } from "agents"
-
-// Start a query - creates isolated thread
-result = await query(researcher, "What are best practices for error handling?")
-
-// Access the response
-print(result.turn.response.text)
-
-// Continue the query thread later
-followup = await result.continue("What about async errors specifically?")
-print(followup.turn.response.text)
-
-// Can continue indefinitely
-moreFollowup = await followup.continue("Show me examples")
-```
-
-**QueryResult Structure:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `turn` | Turn | The result turn |
-| `threadId` | String | The query thread ID |
-| `thread` | Thread | The query thread (for inspection) |
-| `continue(input)` | Function | Continue this query thread |
-
-**MUST Requirements for query():**
-
-1. MUST create an isolated thread for the query
-2. MUST NOT affect the caller's conversation state
-3. `continue()` MUST use the query thread's history
-4. MUST return QueryResult with continuation capability
-5. Query threads MUST be serializable within sessions
-
-### 9.3 Comparison
-
-| Aspect | ask() | query() |
-|--------|-------|---------|
-| History | Appends to provided thread | Creates isolated thread |
-| Context | Shares caller's context | Independent context |
-| Continuation | Via same thread | Via `continue()` method |
-| Use Case | Multi-turn in main flow | Side conversations, research |
-
-```pseudocode
-// ask() - part of main conversation
-mainThread = new Thread()
-await ask(coder, "Create a function", mainThread)
-await ask(coder, "Add tests for it", mainThread)  // Has context
-
-// query() - isolated research
-result = await query(researcher, "What testing framework is best?")
-await result.continue("Compare Jest and Vitest")  // Continues query
-// mainThread is not affected
-```
-
----
-
-## 10. Middleware
-
-### 10.1 Middleware Interface
+### 9.1 Middleware Interface
 
 ```pseudocode
 interface Middleware {
   name: String
   before?(context: MiddlewareContext) -> Promise<MiddlewareContext | void>
-  after?(context: MiddlewareContext, result: Turn) -> Promise<Turn>
-  onError?(context: MiddlewareContext, error: Error) -> Promise<Turn | void>
+  after?(context: MiddlewareContext, result: GenerateResult) -> Promise<GenerateResult>
+  onError?(context: MiddlewareContext, error: Error) -> Promise<GenerateResult | void>
 }
 ```
 
@@ -1246,11 +1154,10 @@ interface Middleware {
 |-------|------|-------------|
 | `agent` | Agent | The agent |
 | `input` | Message | User input |
-| `history` | List<Message> | Conversation history |
-| `metadata` | Map | Request metadata (mutable) |
-| `session` | Session? | Session if executing within one |
+| `state` | AgentState | Current state |
+| `metadata` | Map | Request metadata (mutable within middleware) |
 
-### 10.2 Middleware Composition
+### 9.2 Middleware Composition
 
 Middleware executes in order for `before`, reverse order for `after`:
 
@@ -1269,11 +1176,7 @@ agent({
 // 7. first.after()
 ```
 
-This "onion" pattern allows outer middleware to wrap inner middleware behavior.
-
-### 10.3 logging() Middleware (v1)
-
-The only required middleware for v1:
+### 9.3 logging() Middleware (v1)
 
 ```pseudocode
 logging(options?: LoggingOptions) -> Middleware
@@ -1288,65 +1191,7 @@ logging(options?: LoggingOptions) -> Middleware
 | `includeMessages` | Boolean | false | Log full message content |
 | `includeTiming` | Boolean | true | Log execution timing |
 
-**Logged Events:**
-
-- Agent execution start (input, agent ID)
-- Step start/end (for multi-step strategies)
-- Tool calls (tool name, arguments)
-- Agent execution end (output summary, timing, token usage)
-- Errors (error details, stack trace at debug level)
-
-```pseudocode
-import { agent } from "agents"
-import { logging } from "agents/middleware"
-import anthropic from "upp/anthropic"
-
-coder = agent({
-  model: anthropic("claude-sonnet-4-20250514"),
-  middleware: [
-    logging({
-      level: "debug",
-      includeTiming: true,
-    }),
-  ],
-})
-
-await coder.run("Hello")
-// Logs:
-// [INFO] Agent abc-123 starting execution
-// [DEBUG] Input: "Hello"
-// [INFO] Agent abc-123 completed in 1.2s (150 tokens)
-```
-
-### 10.4 Future Middleware (Post-v1)
-
-The following middleware are specified but not required for v1:
-
-**guardrails() - Content Safety**
-
-```pseudocode
-guardrails(options?: GuardrailsOptions) -> Middleware
-```
-
-Filters input/output for safety. Can reject requests or transform responses.
-
-**memory() - Context Management**
-
-```pseudocode
-memory(options?: MemoryOptions) -> Middleware
-```
-
-Manages context window via summarization, retrieval, or truncation.
-
-**budget() - Resource Limits**
-
-```pseudocode
-budget(options: BudgetOptions) -> Middleware
-```
-
-Enforces token limits, step limits, or time limits.
-
-### 10.5 Custom Middleware
+### 9.4 Custom Middleware
 
 ```pseudocode
 timing: Middleware = {
@@ -1362,94 +1207,59 @@ timing: Middleware = {
     print(`Execution took ${duration}ms`)
     return result
   },
-
-  onError: async (context, error) => {
-    duration = Date.now() - context.metadata.startTime
-    print(`Failed after ${duration}ms: ${error.message}`)
-    // Return undefined to propagate error
-    // Return Turn to recover
-  },
 }
 ```
 
-### 10.6 MUST Requirements for Middleware
-
-1. `before` hooks MUST execute in array order
-2. `after` hooks MUST execute in reverse array order
-3. `onError` hooks MUST execute in reverse array order
-4. Middleware MUST NOT modify Turn types (use UPP Turn as-is)
-5. `before` returning modified context MUST pass modifications downstream
-6. `after` MUST return a valid UPP Turn
-
 ---
 
-## 11. Agent Strategy Hooks
+## 10. Agent Strategy Hooks
 
-### 11.1 AgentStrategy Structure
+### 10.1 AgentStrategy Structure
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `stopCondition` | Function | Evaluate if execution should stop |
 | `onStepStart` | Function | Called when step begins |
 | `onReason` | Function | Called during reasoning phase (ReAct) |
-| `onAct` | Function | Called during action phase (ReAct) |
-| `onObserve` | Function | Called during observation phase (ReAct) |
+| `onAct` | Function | Called during action phase |
+| `onObserve` | Function | Called during observation phase |
 | `onStepEnd` | Function | Called when step completes |
 | `onComplete` | Function | Called when execution completes |
 | `onError` | Function | Called on execution error |
 
-### 11.2 Hook Signatures
+### 10.2 Hook Signatures
 
 ```pseudocode
 interface AgentStrategy {
-  // Stop condition - checked after each step
-  stopCondition?: (state: ExecutionState) -> Boolean | Promise<Boolean>
-
-  // Step lifecycle
-  onStepStart?: (step: Integer, state: ExecutionState) -> void
-  onStepEnd?: (step: Integer, result: StepResult) -> void
-
-  // ReAct phases (only called by react() strategy)
+  stopCondition?: (state: AgentState) -> Boolean | Promise<Boolean>
+  onStepStart?: (step: Integer, state: AgentState) -> void
   onReason?: (step: Integer, reasoning: String) -> void
   onAct?: (step: Integer, actions: List<ToolCall>) -> void
   onObserve?: (step: Integer, observations: List<ToolResult>) -> void
-
-  // Completion
-  onComplete?: (turn: Turn) -> void
-
-  // Error handling
-  onError?: (error: Error, state: ExecutionState) -> void | Turn
+  onStepEnd?: (step: Integer, result: { turn: Turn, state: AgentState }) -> void
+  onComplete?: (result: GenerateResult) -> void
+  onError?: (error: Error, state: AgentState) -> void | GenerateResult
 }
 ```
 
-**StepResult Structure:**
+### 10.3 Stop Conditions
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `turn` | Turn | The turn from this step |
-| `state` | ExecutionState | Current execution state |
-
-### 11.3 Stop Conditions
-
-The `stopCondition` hook evaluates after each step to determine if execution should stop early:
+Since UAP defaults to infinite execution, `stopCondition` is the primary way to control termination:
 
 ```pseudocode
 agent({
   model: anthropic("claude-sonnet-4-20250514"),
-  execution: react({ maxSteps: 50 }),
+  execution: react(),  // Infinite by default
   strategy: {
     stopCondition: (state) => {
-      // Stop if task marked complete in metadata
+      // Stop on explicit completion signal
       if (state.metadata.taskComplete) return true
 
-      // Stop if specific output detected
-      if (state.messages.some(m =>
-        m.type === "assistant" &&
-        m.content.some(c => c.text?.includes("TASK COMPLETE"))
-      )) return true
+      // Stop on budget
+      if (state.metadata.totalTokens > 50000) return true
 
-      // Stop if too many tokens used
-      if (state.metadata.totalTokens > 10000) return true
+      // Stop on time
+      if (Date.now() - state.metadata.startTime > 300000) return true
 
       return false
     },
@@ -1457,84 +1267,27 @@ agent({
 })
 ```
 
-### 11.4 Hook Execution Order
-
-For a single step in react() strategy:
-
-```
-onStepStart(step, state)
-  │
-  ├─> onReason(step, reasoning)
-  │
-  ├─> onAct(step, toolCalls)
-  │
-  ├─> onObserve(step, results)
-  │
-  v
-onStepEnd(step, { turn, state })
-  │
-  ├─> stopCondition(state) -> if true, stop
-  │
-  v
-[next step or completion]
-  │
-  v
-onComplete(finalTurn)
-```
-
-### 11.5 Error Handling Hook
-
-The `onError` hook can recover from errors:
-
-```pseudocode
-strategy: {
-  onError: (error, state) => {
-    if (error.code === "RATE_LIMITED") {
-      // Log and let it propagate
-      console.error("Rate limited, will retry via UPP retry strategy")
-      return  // undefined = propagate error
-    }
-
-    if (error.code === "CONTEXT_LENGTH_EXCEEDED") {
-      // Could return a Turn to gracefully complete
-      return createSummaryTurn(state, "Context limit reached")
-    }
-
-    // Other errors propagate
-    throw error
-  },
-}
-```
-
-### 11.6 MUST Requirements for Hooks
-
-1. Hooks MUST be called in the documented order
-2. `stopCondition` MUST be evaluated after every step
-3. `onError` returning Turn MUST cause graceful completion
-4. `onError` returning undefined/void MUST propagate the error
-5. Async hooks MUST be awaited before proceeding
-
 ---
 
-## 12. Streaming
+## 11. Streaming
 
-### 12.1 AgentStreamResult Interface
+### 11.1 AgentStreamResult Interface
 
 ```pseudocode
 interface AgentStreamResult {
   [Symbol.asyncIterator](): AsyncIterator<AgentStreamEvent>
-  turn: Promise<Turn>  // Resolves after stream completes
-  abort(): void        // Cancel the stream
+  result: Promise<GenerateResult>  // Resolves after completion
+  abort(): void
 }
 ```
 
-### 12.2 AgentStreamEvent Structure
+### 11.2 AgentStreamEvent Structure
 
-UAP streaming provides both UAP-level events and UPP-level events via a discriminated union:
+UAP streaming provides both UAP-level events and UPP-level events:
 
 ```pseudocode
 interface AgentStreamEvent {
-  source: "uap" | "upp"  // Discriminator for filtering
+  source: "uap" | "upp"
 
   // Present when source === "uap"
   uap?: {
@@ -1545,290 +1298,128 @@ interface AgentStreamEvent {
   }
 
   // Present when source === "upp"
-  upp?: StreamEvent  // Original UPP StreamEvent, unchanged
+  upp?: StreamEvent  // Original UPP StreamEvent
 }
 ```
 
 **UAPEventType Values:**
 
-| Type | Description | Data |
-|------|-------------|------|
-| `step_start` | Step beginning | `{ stepNumber: Integer }` |
-| `step_end` | Step completed | `{ stepNumber: Integer, usage: TokenUsage }` |
-| `reasoning` | Reasoning output (ReAct) | `{ text: String }` |
-| `action` | Action taken | `{ toolCalls: List<ToolCall> }` |
-| `observation` | Observation received | `{ results: List<ToolResult> }` |
-| `checkpoint` | Checkpoint created | `{ checkpointId: String }` |
+| Type | Description |
+|------|-------------|
+| `step_start` | Step beginning |
+| `step_end` | Step completed |
+| `reasoning` | Reasoning output (ReAct) |
+| `action` | Action taken |
+| `observation` | Observation received |
 
-### 12.3 Streaming Usage
+### 11.3 Streaming Usage
 
 ```pseudocode
-stream = coder.stream("Implement a feature")
+stream = agent.stream("Implement a feature", state)
 
 for await (event of stream) {
   if (event.source === "uap") {
     // UAP step-level events
-    switch (event.uap.type) {
-      case "step_start":
-        print(`Starting step ${event.uap.step}`)
-        break
-      case "reasoning":
-        print(`Reasoning: ${event.uap.data.text}`)
-        break
-      case "action":
-        for (call of event.uap.data.toolCalls) {
-          print(`Calling: ${call.toolName}`)
-        }
-        break
-      case "step_end":
-        print(`Step ${event.uap.step} complete`)
-        break
+    if (event.uap.type === "step_start") {
+      print(`Step ${event.uap.step}`)
     }
   } else {
-    // UPP LLM-level events (passthrough)
-    switch (event.upp.type) {
-      case "text_delta":
-        process.stdout.write(event.upp.delta.text ?? "")
-        break
-      case "tool_call_delta":
-        // Tool call streaming
-        break
+    // UPP LLM events
+    if (event.upp.type === "text_delta") {
+      process.stdout.write(event.upp.delta.text ?? "")
     }
   }
 }
 
-// Get final turn after stream completes
-turn = await stream.turn
-print(`Total tokens: ${turn.usage.totalTokens}`)
+{ turn, state: newState } = await stream.result
 ```
 
-### 12.4 Filtering Events
+### 11.4 Streaming State Completeness
+
+**Implementation Note:** The `state` returned by `stream.result` MUST include the complete execution history:
+
+- All messages from all steps (reasoning, actions, observations)
+- All tool call results
+- Updated step counter
+- All reasoning traces (for ReAct)
+- Updated plan status (for Plan strategy)
+
+The returned state MUST be identical to what `generate()` would return for the same execution. Streaming is an observation mechanism, not a different execution path.
 
 ```pseudocode
-// Only UAP events
-for await (event of stream) {
-  if (event.source === "uap") {
-    handleUAPEvent(event.uap)
-  }
-}
+// These must produce equivalent final states:
+{ turn: t1, state: s1 } = await agent.generate(input, state)
 
-// Only UPP text deltas
-for await (event of stream) {
-  if (event.source === "upp" && event.upp.type === "text_delta") {
-    process.stdout.write(event.upp.delta.text ?? "")
-  }
-}
+stream = agent.stream(input, state)
+for await (event of stream) { /* consume */ }
+{ turn: t2, state: s2 } = await stream.result
 
-// Both with different handling
-for await (event of stream) {
-  if (event.source === "uap") {
-    logToPanel(event.uap)
-  } else {
-    renderToTerminal(event.upp)
-  }
-}
+// s1 and s2 are structurally equivalent (different IDs, same content)
+assert(s1.messages.length === s2.messages.length)
+assert(s1.step === s2.step)
 ```
-
-### 12.5 MUST Requirements for Streaming
-
-1. MUST emit UPP events unchanged with `source: "upp"`
-2. MUST emit UAP events with `source: "uap"`
-3. Events MUST be emitted in chronological order
-4. `turn` promise MUST resolve to valid UPP Turn after completion
-5. `abort()` MUST cancel the stream and resolve `turn` with partial results
-6. UAP events MUST include `step` and `agentId`
 
 ---
 
-## 13. Serialization
+## 12. Serialization
 
-### 13.1 Session Serialization
+### 12.1 AgentState Serialization
 
-**SessionJSON Structure:**
+**AgentStateJSON Structure:**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `version` | String | Yes | UAP version (e.g., "1.0.0") |
-| `id` | String | Yes | Session ID (UUIDv4) |
-| `agentId` | String | Yes | Agent ID |
-| `createdAt` | String | Yes | ISO 8601 timestamp |
-| `updatedAt` | String | Yes | ISO 8601 timestamp |
-| `threadTree` | ThreadTreeJSON | Yes | Serialized thread tree |
-| `checkpoints` | List<CheckpointJSON> | Yes | All checkpoints |
-| `metadata` | Map | No | Session metadata |
+| `version` | String | Yes | UAP version |
+| `id` | String | Yes | State ID |
+| `messages` | List<MessageJSON> | Yes | UPP Message serialization |
+| `step` | Integer | Yes | Step number |
+| `metadata` | Map | Yes | User metadata |
+| `reasoning` | List<String> | No | Reasoning traces |
+| `plan` | List<PlanStepJSON> | No | Execution plan |
 
-### 13.2 Thread Tree Serialization
+### 12.2 Thread Tree Serialization
 
 **ThreadTreeJSON Structure:**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `rootId` | String | Yes | Root node ID |
-| `currentId` | String | Yes | Current active node ID |
+| `currentId` | String | Yes | Current node ID |
 | `nodes` | List<ThreadNodeJSON> | Yes | All nodes |
 
-**ThreadNodeJSON Structure:**
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `id` | String | Yes | Node ID (UUIDv4) |
-| `parentId` | String? | No | Parent node ID (null for root) |
-| `name` | String? | No | Branch name |
-| `thread` | ThreadJSON | Yes | UPP Thread serialization |
-| `children` | List<String> | Yes | Child node IDs |
-| `metadata` | Map | No | Node metadata |
-
-### 13.3 Checkpoint Serialization
-
-**CheckpointJSON Structure:**
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `id` | String | Yes | Checkpoint ID (UUIDv4) |
-| `sessionId` | String | Yes | Parent session ID |
-| `timestamp` | String | Yes | ISO 8601 timestamp |
-| `step` | Integer | Yes | Step number at checkpoint |
-| `threadId` | String | Yes | Active thread node ID |
-| `state` | ExecutionStateJSON | Yes | Execution state |
-| `subAgentStates` | Map<String, SessionJSON> | No | Sub-agent session states |
-| `metadata` | Map | No | Checkpoint metadata |
-
-### 13.4 Execution State Serialization
-
-**ExecutionStateJSON Structure:**
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `step` | Integer | Yes | Current step number |
-| `messages` | List<MessageJSON> | Yes | UPP Message serialization |
-| `metadata` | Map | Yes | User-defined metadata |
-| `reasoning` | List<String>? | No | Reasoning traces (ReAct) |
-| `plan` | List<PlanStepJSON>? | No | Execution plan (Plan strategy) |
-
-**PlanStepJSON Structure:**
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `id` | String | Yes | Step ID |
-| `description` | String | Yes | Step description |
-| `tool` | String? | No | Tool to use |
-| `dependsOn` | List<String> | Yes | Dependency step IDs |
-| `status` | String | Yes | "pending" \| "in_progress" \| "completed" \| "failed" |
-
-### 13.5 Example Serialized Session
-
-```json
-{
-  "version": "1.0.0",
-  "id": "sess_abc123",
-  "agentId": "agent_xyz789",
-  "createdAt": "2024-01-15T10:30:00.000Z",
-  "updatedAt": "2024-01-15T10:35:00.000Z",
-  "threadTree": {
-    "rootId": "node_root",
-    "currentId": "node_branch1",
-    "nodes": [
-      {
-        "id": "node_root",
-        "parentId": null,
-        "name": "main",
-        "thread": {
-          "id": "thread_001",
-          "messages": [...]
-        },
-        "children": ["node_branch1"],
-        "metadata": {}
-      },
-      {
-        "id": "node_branch1",
-        "parentId": "node_root",
-        "name": "alternative",
-        "thread": {
-          "id": "thread_002",
-          "messages": [...]
-        },
-        "children": [],
-        "metadata": {}
-      }
-    ]
-  },
-  "checkpoints": [
-    {
-      "id": "cp_001",
-      "sessionId": "sess_abc123",
-      "timestamp": "2024-01-15T10:32:00.000Z",
-      "step": 3,
-      "threadId": "node_root",
-      "state": {
-        "step": 3,
-        "messages": [...],
-        "metadata": { "taskComplete": false },
-        "reasoning": ["First, I need to...", "Now I should..."]
-      },
-      "subAgentStates": {},
-      "metadata": {}
-    }
-  ],
-  "metadata": {
-    "task": "Implement feature X"
-  }
-}
-```
-
-### 13.6 MUST Requirements for Serialization
+### 12.3 MUST Requirements
 
 1. All IDs MUST be preserved exactly during round-trip
-2. Message metadata MUST be preserved (including provider namespaces)
-3. Thread tree structure MUST be fully recoverable
-4. Sub-agent session states MUST be included in checkpoint serialization
-5. `Session.fromJSON()` MUST return a session that behaves identically to the original
-6. Timestamps MUST use ISO 8601 format with timezone
-7. Binary data (images, audio) MUST be base64 encoded
-8. Version field MUST be checked during deserialization
+2. Message metadata MUST be preserved
+3. Timestamps MUST use ISO 8601 format
+4. Binary data MUST be base64 encoded
+5. Version MUST be checked during deserialization
 
 ---
 
-## 14. Data Type Definitions
+## 13. Data Type Definitions
 
-### 14.1 Types from UPP-1.2 (Used Directly)
+### 13.1 Types from UPP-1.2 (Used Directly)
 
-The following types are imported from `@providerprotocol/ai` and used without modification:
-
-**Core:**
-- `llm`, `LLMInstance`, `LLMOptions`
-- `ProviderConfig`, `ModelReference`
-
-**Messages:**
+- `llm`, `LLMInstance`, `LLMOptions`, `ProviderConfig`, `ModelReference`
 - `Message`, `UserMessage`, `AssistantMessage`, `ToolResultMessage`
-- `ContentBlock`, `TextBlock`, `ImageBlock`
-
-**Turns:**
 - `Turn`, `TokenUsage`
-
-**Tools:**
 - `Tool`, `ToolCall`, `ToolResult`, `ToolExecution`
-- `ToolUseStrategy`
-
-**Streaming:**
 - `StreamResult`, `StreamEvent`, `StreamEventType`
-
-**Errors:**
 - `UPPError`, `ErrorCode`
-
-**Utilities:**
 - `Thread`, `ThreadJSON`
 
-### 14.2 UAP-Specific Types
+### 13.2 UAP-Specific Types
 
 **Agent Types:**
 
 ```pseudocode
 interface AgentOptions {
-  model: ModelReference           // Required
+  model: ModelReference
   params?: Map
   config?: ProviderConfig
-  execution?: ExecutionStrategy   // Default: loop()
-  tools?: List<Tool | Agent>
+  execution?: ExecutionStrategy
+  tools?: List<Tool>
   system?: String
   structure?: JSONSchema
   middleware?: List<Middleware>
@@ -1836,21 +1427,42 @@ interface AgentOptions {
 }
 
 interface Agent {
-  id: String                      // UUIDv4
+  id: String
   model: ModelReference
-  tools: List<Tool | Agent>
+  tools: List<Tool>
   system?: String
-  run(input): Promise<Turn>
-  run(history, input): Promise<Turn>
-  stream(input): AgentStreamResult
-  stream(history, input): AgentStreamResult
-  toTool(options?): Tool
+  generate(input, state): Promise<GenerateResult>
+  stream(input, state): AgentStreamResult
+  ask(input, state): Promise<GenerateResult>
+  query(input): Promise<Turn>
 }
 
-interface ToToolOptions {
-  name?: String
-  description?: String
-  parameterSchema?: JSONSchema
+interface GenerateResult {
+  turn: Turn
+  state: AgentState
+}
+```
+
+**State Types:**
+
+```pseudocode
+interface AgentState {
+  id: String
+  messages: List<Message>
+  step: Integer
+  metadata: Map
+  reasoning: List<String>
+  plan?: List<PlanStep>
+
+  static initial(): AgentState
+  withMessage(message): AgentState
+  withMessages(messages): AgentState
+  withStep(step): AgentState
+  withMetadata(key, value): AgentState
+  withReasoning(reasoning): AgentState
+  withPlan(plan): AgentState
+  toJSON(): AgentStateJSON
+  static fromJSON(json): AgentState
 }
 ```
 
@@ -1859,214 +1471,50 @@ interface ToToolOptions {
 ```pseudocode
 interface ExecutionStrategy {
   name: String
-  execute(context: ExecutionContext): Promise<Turn>
-  stream(context: ExecutionContext): AgentStreamResult
-}
-
-interface ExecutionContext {
-  agent: Agent
-  llm: LLMInstance
-  input: Message
-  history: List<Message>
-  tools: List<Tool>
-  strategy: AgentStrategy
-  signal?: AbortSignal
-  state: ExecutionState
-}
-
-interface ExecutionState {
-  step: Integer
-  messages: List<Message>
-  metadata: Map
-  reasoning?: List<String>
-  plan?: List<PlanStep>
+  execute(context): Promise<ExecutionResult>
+  stream(context): AgentStreamResult
 }
 
 interface LoopOptions {
-  maxIterations?: Integer         // Default: 10
+  maxIterations?: Integer  // Default: Infinity
 }
 
 interface ReactOptions {
-  maxSteps?: Integer              // Default: 10
+  maxSteps?: Integer  // Default: Infinity
   reasoningPrompt?: String
-  observationFormat?: String      // Default: "markdown"
 }
 
 interface PlanOptions {
-  maxPlanSteps?: Integer          // Default: 10
-  allowReplan?: Boolean           // Default: true
+  maxPlanSteps?: Integer  // Default: Infinity
+  allowReplan?: Boolean
   planSchema?: JSONSchema
 }
-
-interface PlanStep {
-  id: String
-  description: String
-  tool?: String
-  dependsOn: List<String>
-  status: "pending" | "in_progress" | "completed" | "failed"
-}
-
-interface StepResult {
-  turn: Turn
-  state: ExecutionState
-}
 ```
 
-**Session Types:**
+**Tool Dependency Types:**
 
 ```pseudocode
-interface SessionOptions {
-  id?: String                     // Default: generated UUIDv4
-  checkpoints?: Boolean           // Default: true
-  checkpointInterval?: String     // Default: "step"
-  persistence?: PersistenceAdapter
-  metadata?: Map
+interface ToolDependencyOptions {
+  sequential?: Boolean      // Must complete before others
+  dependsOn?: List<String>  // Tool names to wait for
 }
 
-interface Session {
-  id: String
-  agent: Agent
-  threadTree: ThreadTree
-  checkpoints: List<Checkpoint>
-  currentCheckpoint?: Checkpoint
-  run(input): Promise<Turn>
-  stream(input): AgentStreamResult
-  fork(threadId): String
-  restore(checkpointId): Promise<void>
-  save(): Promise<void>
-  toJSON(): SessionJSON
-}
-
-interface Checkpoint {
-  id: String
-  sessionId: String
-  timestamp: String
-  step: Integer
-  threadId: String
-  state: ExecutionState
-  subAgentStates: Map<String, Session>
-  metadata: Map
-}
-
-interface PersistenceAdapter {
-  save(key: String, data: String): Promise<void>
-  load(key: String): Promise<String?>
-  delete(key: String): Promise<void>
-}
-```
-
-**Thread Tree Types:**
-
-```pseudocode
-interface ThreadTree {
-  root: ThreadNode
-  current: ThreadNode
-  nodes: Map<String, ThreadNode>
-  branch(fromId: String, name?: String): String
-  checkout(nodeId: String): void
-  merge(sourceId: String, targetId: String): void
-  history(): List<Message>
-  toJSON(): ThreadTreeJSON
-}
-
-interface ThreadNode {
-  id: String
-  parentId?: String
-  thread: Thread                  // UPP Thread
-  name?: String
-  metadata: Map
-  children: List<String>
-}
-
-interface QueryResult {
-  turn: Turn
-  threadId: String
-  thread: Thread
-  continue(input: String | Message): Promise<QueryResult>
-}
-```
-
-**Middleware Types:**
-
-```pseudocode
-interface Middleware {
+// Extends UPP Tool
+interface Tool {
   name: String
-  before?(context: MiddlewareContext): Promise<MiddlewareContext | void>
-  after?(context: MiddlewareContext, result: Turn): Promise<Turn>
-  onError?(context: MiddlewareContext, error: Error): Promise<Turn | void>
-}
-
-interface MiddlewareContext {
-  agent: Agent
-  input: Message
-  history: List<Message>
-  metadata: Map
-  session?: Session
-}
-
-interface LoggingOptions {
-  level?: String                  // Default: "info"
-  logger?: Function
-  includeMessages?: Boolean       // Default: false
-  includeTiming?: Boolean         // Default: true
+  description: String
+  parameters: JSONSchema
+  run: Function
+  sequential?: Boolean
+  dependsOn?: List<String>
 }
 ```
 
-**Strategy Types:**
-
-```pseudocode
-interface AgentStrategy {
-  stopCondition?: (state: ExecutionState) -> Boolean | Promise<Boolean>
-  onStepStart?: (step: Integer, state: ExecutionState) -> void
-  onReason?: (step: Integer, reasoning: String) -> void
-  onAct?: (step: Integer, actions: List<ToolCall>) -> void
-  onObserve?: (step: Integer, observations: List<ToolResult>) -> void
-  onStepEnd?: (step: Integer, result: StepResult) -> void
-  onComplete?: (turn: Turn) -> void
-  onError?: (error: Error, state: ExecutionState) -> void | Turn
-}
-```
-
-**Streaming Types:**
-
-```pseudocode
-interface AgentStreamResult {
-  [Symbol.asyncIterator](): AsyncIterator<AgentStreamEvent>
-  turn: Promise<Turn>
-  abort(): void
-}
-
-interface AgentStreamEvent {
-  source: "uap" | "upp"
-  uap?: UAPEvent
-  upp?: StreamEvent               // UPP StreamEvent
-}
-
-interface UAPEvent {
-  type: UAPEventType
-  step: Integer
-  agentId: String
-  data: Map
-}
-
-type UAPEventType =
-  | "step_start"
-  | "step_end"
-  | "reasoning"
-  | "action"
-  | "observation"
-  | "checkpoint"
-```
-
-### 14.3 Complete Export List
-
-UAP implementations MUST export:
+### 13.3 Export List
 
 **Entry Points:**
 - `agent`
-- `session`
-- `ask`
-- `query`
+- `AgentState`
 
 **Execution Strategies (from agents/execution):**
 - `loop`
@@ -2079,358 +1527,188 @@ UAP implementations MUST export:
 **Classes:**
 - `ThreadTree`
 - `ThreadNode`
-- `Session`
-- `Checkpoint`
-
-**Type Exports (TypeScript):**
-- All interfaces defined in section 14.2
 
 ---
 
-## 15. Conformance
+## 14. Conformance
 
-### 15.1 Conformance Levels
+### 14.1 Conformance Levels
 
 **Level 1: Core Agent (Required)**
-- `agent()` function with model binding
-- Basic `run()` and `stream()` methods
-- Tool execution via UPP
+- `agent()` function
+- `generate()`, `stream()`, `ask()`, `query()` methods
+- `AgentState` immutable state
 - `loop()` execution strategy
 - Returns standard UPP Turn
 
-**Level 2: Sessions (Required)**
-- `session()` function
-- Checkpoint creation (automatic per-step)
-- Checkpoint restoration via `restore()`
-- `toJSON()` and `fromJSON()` serialization
+**Level 2: Advanced Execution (Required)**
+- `react()` strategy
+- `plan()` strategy
+- Custom strategy support
+- Infinite defaults
 
-**Level 3: Thread Trees (Required)**
+**Level 3: Thread Trees (Optional)**
 - `ThreadTree` implementation
-- Branching via `branch()`
-- Checkout via `checkout()`
-- `history()` traversal
+- Branching and checkout
+- History traversal
 
-**Level 4: Communication (Required)**
-- `ask()` function with thread integration
-- `query()` function with continuation
-- `QueryResult.continue()` method
-
-**Level 5: Advanced Execution (Required)**
-- `react()` strategy with reasoning phases
-- `plan()` strategy with structured plans
-- Custom strategy support via ExecutionStrategy interface
-
-**Level 6: Middleware (Required)**
-- Middleware pipeline (ordered array)
-- `logging()` middleware implementation
+**Level 4: Middleware (Required)**
+- Middleware pipeline
+- `logging()` middleware
 - Custom middleware support
 
-### 15.2 MUST Requirements Summary
+### 14.2 MUST Requirements Summary
 
 1. **Type Uniformity:** MUST use UPP-1.2 types directly without wrapping
 2. **No Re-exports:** MUST NOT re-export UPP types
-3. **Identity:** All IDs MUST be UUIDv4
-4. **Serialization:** Session serialization MUST be fully recoverable
-5. **Sub-agents:** MUST track parent-child relationships in context
-6. **Middleware:** MUST execute in specified order (forward for before, reverse for after)
-7. **Strategies:** MUST respect stop conditions after each step
-8. **Streaming:** MUST emit both UAP and UPP events with source discriminator
-9. **Checkpoints:** MUST capture complete state including sub-agent state
+3. **Functional State:** `AgentState` MUST be immutable
+4. **Infinite Defaults:** `maxIterations`/`maxSteps` MUST default to Infinity
+5. **Explicit Sub-Agents:** MUST NOT auto-generate tool schemas from agents
+6. **Identity:** All IDs MUST be UUIDv4
+7. **Serialization:** State MUST be fully serializable
 
-### 15.3 SHOULD Requirements Summary
+### 14.3 MUST NOT Requirements
 
-1. Implementations SHOULD support all standard execution strategies
-2. Implementations SHOULD support concurrent tool execution
-3. Implementations SHOULD support LLM inheritance for sub-agents
-4. `logging()` SHOULD support configurable log levels
-5. Strategies SHOULD aggregate token usage across steps
-
-### 15.4 MAY Requirements
-
-1. Implementations MAY provide additional execution strategies
-2. Implementations MAY provide additional middleware
-3. Implementations MAY provide persistence adapters for various backends
-4. Implementations MAY support strategy-specific optimizations
+1. MUST NOT impose artificial execution limits by default
+2. MUST NOT mutate state internally
+3. MUST NOT auto-generate sub-agent tool schemas
+4. MUST NOT hide conversation history in implicit state
 
 ---
 
-## 16. Security Considerations
+## 15. Security Considerations
 
-### 16.1 Sub-Agent Execution
+### 15.1 Developer Responsibility
 
-- Sub-agents execute with parent's permissions unless explicitly restricted
-- Tool approval handlers from UPP MUST be respected for sub-agent tools
-- Nested sub-agent calls can amplify permissions - implement depth limits
-- Stop conditions prevent unbounded execution loops
+UAP explicitly places security responsibility with the developer:
 
-### 16.2 Serialization Security
+- **Runaway Agents:** Developer must implement `stopCondition` or explicit limits
+- **Resource Exhaustion:** Developer must implement budget middleware or limits
+- **Cost Control:** Developer must track token usage via state metadata
 
-- Serialized sessions may contain sensitive conversation data
-- Checkpoint data SHOULD be encrypted at rest in production
-- Deserialization MUST validate structure before hydrating
+The protocol provides the pipe; the developer provides the valves.
+
+### 15.2 Sub-Agent Security
+
+- Sub-agent tools execute with whatever permissions their `run` function has
+- Nested sub-agent calls can amplify access—developer must audit tool chains
+- Stop conditions in parent do not automatically propagate to sub-agents
+
+### 15.3 Serialization Security
+
+- Serialized state may contain sensitive conversation data
+- State SHOULD be encrypted at rest in production
+- Deserialization MUST validate structure
 - Untrusted serialized data SHOULD NOT be deserialized
 
-### 16.3 Middleware Security
-
-- Middleware has full access to conversation content
-- `logging()` middleware may expose sensitive data - configure carefully
-- Guardrails middleware (post-v1) SHOULD be first in pipeline
-- Budget middleware prevents resource exhaustion attacks
-
-### 16.4 Tool Execution Security
+### 15.4 Tool Execution Security
 
 All UPP-1.2 tool security considerations apply. Additionally:
 
-- Sub-agents as tools have full tool capabilities
-- Nested sub-agent calls can create permission escalation paths
-- Stop conditions and max step limits prevent runaway execution
-- Parallel tool execution requires thread-safe tool implementations
-
-### 16.5 Context Injection
-
-- User input flows through execution strategies to LLM
-- Middleware can modify context before LLM calls
-- System prompts SHOULD be protected from user modification
-- Tool results flow back through the same pipeline
+- Tools with `sequential: true` or `dependsOn` create execution ordering that may have security implications
+- Model-driven execution order gives the model control over execution flow
 
 ---
 
-## Appendix A: Example Implementation
+## Appendix A: Migration from Previous Draft
 
-### A.1 Complete Agent Example
+### A.1 Breaking Changes
+
+| Previous | Current | Rationale |
+|----------|---------|-----------|
+| `run()` | `generate()` | Consistency with UPP `llm.generate()` |
+| `ask(agent, input)` | `agent.ask(input, state)` | Method on agent, explicit state |
+| `query(agent, input)` | `agent.query(input)` | Method on agent |
+| `session()` | Removed | Replaced by functional `AgentState` |
+| `maxIterations: 10` | `maxIterations: Infinity` | Pipe not nanny |
+| `agent.toTool()` | Explicit Tool | No magic schema generation |
+
+### A.2 State Migration
 
 ```pseudocode
-import { agent, session, ask, query } from "agents"
+// Previous (implicit state)
+session = session(agent)
+turn1 = await session.run("Hello")
+turn2 = await session.run("Continue")
+
+// Current (explicit state)
+s0 = AgentState.initial()
+{ turn: t1, state: s1 } = await agent.generate("Hello", s0)
+{ turn: t2, state: s2 } = await agent.generate("Continue", s1)
+```
+
+---
+
+## Appendix B: Complete Example
+
+```pseudocode
+import { agent, AgentState } from "agents"
 import { react } from "agents/execution"
 import { logging } from "agents/middleware"
-import { Thread } from "upp"
+import { Tool } from "upp"
 import anthropic from "upp/anthropic"
 
-// Define sub-agents
+// Define a sub-agent
 explorer = agent({
   model: anthropic("claude-haiku-4-20250514"),
-  system: "You explore codebases and report findings concisely.",
   tools: [Glob, Grep, Read],
+  system: "You explore codebases and report findings.",
 })
 
-// Define main agent with sub-agent as tool
-coder = agent({
-  model: anthropic("claude-sonnet-4-20250514"),
-  params: { max_tokens: 4096 },
-  execution: react({ maxSteps: 20 }),
-  tools: [
-    Bash,
-    Read,
-    Write,
-    explorer,  // Sub-agent as tool
-  ],
-  system: `You are an expert software engineer.
-Use the explorer tool to understand code structure before making changes.
-Think step by step and explain your reasoning.`,
-  middleware: [
-    logging({ level: "info", includeTiming: true }),
-  ],
-  strategy: {
-    stopCondition: (state) => state.metadata.taskComplete === true,
-    onStepStart: (step, state) => {
-      print(`--- Step ${step} ---`)
+// Explicitly define sub-agent as tool
+explorerTool: Tool = {
+  name: "explore",
+  description: "Explore codebase to find relevant files and code",
+  parameters: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "What to find" },
     },
-    onReason: (step, reasoning) => {
-      print(`Reasoning: ${reasoning.substring(0, 200)}...`)
-    },
-    onAct: (step, actions) => {
-      for (action of actions) {
-        print(`Action: ${action.toolName}`)
-      }
-    },
-    onStepEnd: (step, result) => {
-      print(`Step ${step} used ${result.turn.usage.totalTokens} tokens`)
-    },
-    onComplete: (turn) => {
-      print(`Completed in ${turn.cycles} cycles`)
-    },
+    required: ["query"],
   },
-})
-
-// Create session for persistence
-sess = session(coder, {
-  checkpoints: true,
-  checkpointInterval: "step",
-})
-
-// Run task
-turn = await sess.run("Find all TODO comments and create issues for them")
-
-// Save session for later
-json = sess.toJSON()
-await storage.save(`session:${sess.id}`, json)
-
-// Later: restore and continue
-saved = await storage.load(`session:${sess.id}`)
-restored = Session.fromJSON(saved, coder)
-turn2 = await restored.run("Now prioritize those issues")
-```
-
-### A.2 Query Pattern Example
-
-```pseudocode
-import { agent, query } from "agents"
-import anthropic from "upp/anthropic"
-
-researcher = agent({
-  model: anthropic("claude-sonnet-4-20250514"),
-  system: "You are a technical researcher. Provide detailed, accurate information.",
-})
-
-// Start a research query
-result = await query(researcher, "What are the best practices for error handling in TypeScript?")
-print(result.turn.response.text)
-
-// Continue the query thread
-followup1 = await result.continue("How does this apply to async/await?")
-print(followup1.turn.response.text)
-
-// Continue further
-followup2 = await followup1.continue("Show me examples with try-catch-finally")
-print(followup2.turn.response.text)
-
-// The main conversation is unaffected
-// Each query/continue builds on previous context in isolated thread
-```
-
-### A.3 Streaming Example
-
-```pseudocode
-import { agent } from "agents"
-import { react } from "agents/execution"
-import anthropic from "upp/anthropic"
-
-coder = agent({
-  model: anthropic("claude-sonnet-4-20250514"),
-  execution: react({ maxSteps: 10 }),
-  tools: [Read, Write],
-})
-
-stream = coder.stream("Implement a simple HTTP server")
-
-// Process events as they arrive
-for await (event of stream) {
-  if (event.source === "uap") {
-    // Agent-level events
-    switch (event.uap.type) {
-      case "step_start":
-        print(`\n=== Step ${event.uap.step} ===\n`)
-        break
-      case "reasoning":
-        print(`[Thinking] ${event.uap.data.text}\n`)
-        break
-      case "action":
-        for (call of event.uap.data.toolCalls) {
-          print(`[Action] ${call.toolName}(${JSON.stringify(call.arguments)})\n`)
-        }
-        break
-      case "observation":
-        print(`[Result] ${event.uap.data.results.length} results\n`)
-        break
-      case "step_end":
-        print(`[Tokens] ${event.uap.data.usage.totalTokens}\n`)
-        break
-    }
-  } else {
-    // LLM-level events (text streaming)
-    if (event.upp.type === "text_delta") {
-      process.stdout.write(event.upp.delta.text ?? "")
-    }
-  }
+  run: async (params) => {
+    turn = await explorer.query(params.query)
+    return turn.response.text
+  },
 }
 
-// Get final result
-turn = await stream.turn
-print(`\n\nFinal response: ${turn.response.text}`)
-print(`Total tokens: ${turn.usage.totalTokens}`)
-```
-
----
-
-## Appendix B: Migration from Raw UPP
-
-### B.1 Before: Raw UPP Code
-
-```pseudocode
-import { llm, Thread, Tool } from "upp"
-import anthropic from "upp/anthropic"
-
-model = llm({
-  model: anthropic("claude-sonnet-4-20250514"),
-  system: "You are a coding assistant.",
-  tools: [Read, Write, Bash],
-  toolStrategy: { maxIterations: 10 },
-})
-
-thread = new Thread()
-
-// Manual loop for multi-step tasks
-while (true) {
-  turn = await model.generate(thread.messages, userInput)
-  thread.append(turn)
-
-  if (!turn.response.hasToolCalls) break
-  if (thread.messages.length > 100) break
-
-  // Manual stop condition checking
-  if (turn.response.text.includes("DONE")) break
-}
-```
-
-### B.2 After: UAP Agent
-
-```pseudocode
-import { agent, session } from "agents"
-import { react } from "agents/execution"
-import { logging } from "agents/middleware"
-import anthropic from "upp/anthropic"
-
+// Main agent with explicit limits (developer's choice)
 coder = agent({
   model: anthropic("claude-sonnet-4-20250514"),
-  execution: react({ maxSteps: 50 }),
-  tools: [Read, Write, Bash],
-  system: "You are a coding assistant.",
-  middleware: [logging()],
+  execution: react(),  // Infinite by default
+  tools: [Bash, Read, Write, explorerTool],
+  system: "You are an expert software engineer.",
+  middleware: [logging({ level: "info" })],
   strategy: {
+    // Developer implements their own limits
     stopCondition: (state) => {
-      if (state.messages.length > 100) return true
-      return state.messages.some(m =>
-        m.type === "assistant" &&
-        m.content.some(c => c.text?.includes("DONE"))
-      )
+      if (state.metadata.taskComplete) return true
+      if (state.step > 50) return true  // Explicit step limit
+      return false
     },
+    onStepStart: (step, state) => print(`Step ${step}`),
+    onComplete: (result) => print(`Done: ${result.turn.usage.totalTokens} tokens`),
   },
 })
 
-sess = session(coder)
-turn = await sess.run(userInput)
-// Automatic checkpointing, logging, stop conditions
-// Can restore later with sess.restore()
+// Functional execution
+s0 = AgentState.initial()
+s0 = s0.withMetadata("startTime", Date.now())
+
+{ turn, state } = await coder.generate(
+  "Find and fix all TypeScript errors",
+  s0
+)
+
+// Save state for later
+json = state.toJSON()
+await storage.save("my-task", JSON.stringify(json))
+
+// Restore and continue
+saved = JSON.parse(await storage.load("my-task"))
+restored = AgentState.fromJSON(saved)
+{ turn: t2, state: s2 } = await coder.generate("Now add tests", restored)
 ```
-
----
-
-## Appendix C: Glossary
-
-| Term | Definition |
-|------|------------|
-| **Agent** | An AI entity combining model, tools, execution strategy, and middleware |
-| **Checkpoint** | A serialized snapshot of session state for recovery |
-| **Execution Strategy** | Algorithm for running agent steps (loop, react, plan) |
-| **Middleware** | Composable functions wrapping agent execution |
-| **QueryResult** | Result of `query()` with continuation capability |
-| **Session** | Stateful wrapper with persistence and checkpoints |
-| **Step** | One cycle of an execution strategy |
-| **Sub-Agent** | An agent used as a tool by another agent |
-| **Thread Tree** | Tree-structured conversation branches |
-| **Turn** | UPP Turn - complete result of one LLM inference |
-| **UAP** | Unified Agent Protocol (this specification) |
-| **UPP** | Unified Provider Protocol (@providerprotocol/ai) |
 
 ---
 
