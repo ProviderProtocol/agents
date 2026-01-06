@@ -35,3 +35,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Local references
 reference/
+
+# Hide examples for now
+examples/
