@@ -1,3 +1,16 @@
+1. **100% TypeScript compliant** – All code must be fully TypeScript compliant with no use of `any`, implicit types, or unchecked assumptions.
+2. **No complex abstractions around library data types** – Use library APIs as first-class application code; never truncate, shrink, or morph library data. Maintain full data stacks to accurately and transparently represent upstream libraries.
+3. **High coding standards** – Follow modern best practices, prioritize readability, maintainability, and correctness, and write code that is clear in intent and behavior.
+4. **AirBnB style compliance** – All code must strictly follow AirBnB’s TypeScript/JavaScript style guidelines and conventions.
+5. **Lint cleanliness required** – Always ensure `bun lint` reports **zero errors** before code is considered complete or acceptable.
+6. **Type-check cleanliness required** – Always ensure `bun typecheck` reports **zero errors** to guarantee full type safety and correctness.
+7. **Electron-first environment** – This is a desktop **Electron** application. Web technologies are used for UI and runtime only; standard web application or hosted API security assumptions do not apply unless explicitly requested.
+8. **No re-exports of library types or APIs** – Do **not** create re-exports, wrappers, or barrel files for third-party library types or functions (e.g., `export type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'`). Always import directly from the source library in every file that uses them. However, **do import and use library types** for proper typing—avoid `unknown` or `any` when a concrete type exists. The rule prohibits re-exporting, not importing for local use.
+9. **Never disable tooling rules** – Do **not** suppress, disable, or bypass linting, TypeScript, or language rules (e.g. `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, rule overrides, or inline suppressions). Code must be written to comply with the active ruleset rather than weakening or working around it.
+10. **Shared UI components for reuse** – Create reusable components for shared styling and shared views (e.g., consistently styled dropdowns, standardized buttons, or complex UI elements used in multiple places like an AI input bar). Prefer composition and clear props so shared UI stays consistent, maintainable, and avoids duplicated styling/logic across the app.
+11. **Small, maintainable files** – Aim to keep files small and easy to reason about. When a file grows overly large (≈300 lines of code, excluding whitespace), consider refactoring it into cohesive, maintainable modules **when it is realistic and beneficial**. Refactoring should improve clarity and structure—not split code arbitrarily or create artificial indirection.
+12. **Use icon libraries only** – Use established icon libraries for all icons. Do **not** write or embed custom inline SVGs. Rely on library-provided icons to ensure consistency, readability, and easier maintenance across the codebase.
+
 
 Default to using Bun instead of Node.js.
 
