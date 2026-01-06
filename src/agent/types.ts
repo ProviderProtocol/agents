@@ -1,11 +1,10 @@
 import type {
   ModelReference,
-  ProviderConfig,
   Tool,
   Turn,
   Message,
-  JSONSchema,
   LLMInstance,
+  LLMOptions,
 } from '@providerprotocol/ai';
 import type { AgentState } from '../state/index.ts';
 import type {
@@ -18,22 +17,13 @@ import type { Middleware } from '../middleware/types.ts';
 
 /**
  * Options for creating an agent.
+ * Extends LLMOptions for full UPP passthrough.
  */
-export interface AgentOptions {
+export interface AgentOptions extends Partial<Omit<LLMOptions, 'model'>> {
   /** Model reference from a UPP provider factory */
   model: ModelReference;
-  /** Model-specific parameters (passed to llm()) */
-  params?: Record<string, unknown>;
-  /** Provider infrastructure configuration */
-  config?: ProviderConfig;
   /** Execution strategy. Default: loop() */
   execution?: ExecutionStrategy;
-  /** Tools available to the agent */
-  tools?: Tool[];
-  /** System prompt */
-  system?: string;
-  /** Structured output schema */
-  structure?: JSONSchema;
   /** Ordered middleware pipeline */
   middleware?: Middleware[];
   /** Agent lifecycle hooks */

@@ -29,6 +29,7 @@ UAP extends UPP-1.2 with agent-level abstractions including decoupled execution 
 8. [Sub-Agent Protocol](#8-sub-agent-protocol)
 9. [Middleware](#9-middleware)
 10. [Agent Strategy Hooks](#10-agent-strategy-hooks)
+    - [10.4 ToolUseStrategy (UPP Passthrough)](#104-toolusestrategy-upp-passthrough)
 11. [Streaming](#11-streaming)
 12. [Serialization](#12-serialization)
 13. [Data Type Definitions](#13-data-type-definitions)
@@ -71,7 +72,8 @@ UAP-1.0 builds on UPP-1.2 and MUST use the following types directly from `@provi
 - `llm`, `LLMInstance`, `LLMOptions`
 - `Thread`, `Turn`, `TokenUsage`
 - `Message`, `UserMessage`, `AssistantMessage`, `ToolResultMessage`
-- `Tool`, `ToolCall`, `ToolResult`, `ToolExecution`, `ToolUseStrategy`
+- `Tool`, `ToolCall`, `ToolResult`, `ToolExecution`
+- `ToolUseStrategy` (passed through to `llm()` for tool execution hooks)
 - `StreamResult`, `StreamEvent`, `StreamEventType`
 - `UPPError`, `ErrorCode`
 - All provider factories (`anthropic`, `openai`, `google`, etc.)
@@ -223,6 +225,7 @@ UAP SHALL NOT impose artificial execution limits. Default behavior is unbounded 
 
 - `maxIterations`: `Infinity` (not 10)
 - `maxSteps`: `Infinity` (not 10)
+- `toolStrategy.maxIterations`: `Infinity` (UPP tool loop limit)
 - `timeout`: `undefined` (no timeout)
 
 **Rationale:** UAP is a pipe, not a nanny. The model should complete tasks based on its own internal logic. Artificial ceilings create unexpected truncation and incomplete results.
@@ -234,12 +237,16 @@ Developers who want limits MUST explicitly configure them:
 agent({
   model: anthropic("claude-sonnet-4-20250514"),
   execution: react(),  // maxSteps: Infinity by default
+  // toolStrategy.maxIterations: Infinity by default (UPP level)
 })
 
 // Developer explicitly sets limits
 agent({
   model: anthropic("claude-sonnet-4-20250514"),
-  execution: react({ maxSteps: 20 }),  // Explicit limit
+  execution: react({ maxSteps: 20 }),  // Explicit UAP step limit
+  toolStrategy: {
+    maxIterations: 50,  // Explicit UPP tool iteration limit
+  },
   strategy: {
     stopCondition: (state) => state.metadata.budget > 10000,  // Custom limit
   },
@@ -420,19 +427,31 @@ agent(options: AgentOptions) -> Agent
 
 ### 4.2 AgentOptions Structure
 
+`AgentOptions` extends `LLMOptions` from UPP-1.2 for full passthrough of LLM configuration. This ensures complete type uniformity—any option valid for `llm()` is valid for `agent()`.
+
+**UAP-Specific Fields:**
+
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `model` | ModelReference | Yes | A model reference from a UPP provider factory |
-| `params` | Map | No | Model-specific parameters (passed to llm()) |
-| `config` | ProviderConfig | No | Provider infrastructure configuration |
 | `execution` | ExecutionStrategy | No | Execution strategy (default: loop()) |
-| `tools` | List<Tool> | No | Tools available to the agent |
-| `system` | String | No | System prompt |
-| `structure` | JSONSchema | No | Structured output schema |
 | `middleware` | List<Middleware> | No | Ordered middleware pipeline |
 | `strategy` | AgentStrategy | No | Agent lifecycle hooks |
 
+**LLM Passthrough Fields (from LLMOptions):**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `params` | Map | No | Model-specific parameters (passed to llm()) |
+| `config` | ProviderConfig | No | Provider infrastructure configuration |
+| `tools` | List<Tool> | No | Tools available to the agent |
+| `system` | String | No | System prompt |
+| `structure` | JSONSchema | No | Structured output schema |
+| `toolStrategy` | ToolUseStrategy | No | Tool execution hooks (passed to llm()) |
+
 **Note:** The `tools` field accepts only `Tool` objects. Sub-agents must be explicitly converted to tools with defined schemas (see Section 8).
+
+**Note:** The `toolStrategy` field is passed directly to the underlying `llm()` instance. Per Section 2.4, `toolStrategy.maxIterations` defaults to `Infinity` when not specified.
 
 ### 4.3 Agent Interface
 
@@ -1267,6 +1286,61 @@ agent({
 })
 ```
 
+### 10.4 ToolUseStrategy (UPP Passthrough)
+
+UAP passes `toolStrategy` directly to the underlying `llm()` instance for UPP-level tool execution hooks. These hooks fire in real-time during tool execution, complementing the UAP-level `AgentStrategy` hooks.
+
+**ToolUseStrategy Structure (from UPP-1.2):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `maxIterations` | Integer | Maximum tool execution rounds (default: Infinity) |
+| `onToolCall` | Function | Called before each tool execution |
+| `onBeforeCall` | Function | Called before execution, can cancel |
+| `onAfterCall` | Function | Called after successful tool execution |
+| `onError` | Function | Called on tool execution error |
+| `onMaxIterations` | Function | Called when max iterations reached |
+
+**Hook Signatures:**
+
+```pseudocode
+interface ToolUseStrategy {
+  maxIterations?: Integer  // Default: Infinity
+  onToolCall?: (tool: Tool, params: Map) -> void
+  onBeforeCall?: (tool: Tool, params: Map) -> Boolean  // Return false to skip
+  onAfterCall?: (tool: Tool, params: Map, result: Any) -> void
+  onError?: (tool: Tool, params: Map, error: Error) -> void
+  onMaxIterations?: (iterations: Integer) -> void
+}
+```
+
+**Usage with UAP:**
+
+```pseudocode
+agent({
+  model: anthropic("claude-sonnet-4-20250514"),
+  tools: [Bash, Read, Write],
+  // UAP-level hooks (step lifecycle)
+  strategy: {
+    onStepStart: (step, state) => print(`Step ${step}`),
+    onComplete: (result) => print("Done"),
+  },
+  // UPP-level hooks (real-time tool execution)
+  toolStrategy: {
+    maxIterations: Infinity,  // UAP standard
+    onToolCall: (tool, params) => print(`Calling ${tool.name}`),
+    onAfterCall: (tool, params, result) => print(`${tool.name} completed`),
+  },
+})
+```
+
+**Key Difference from AgentStrategy:**
+
+- `AgentStrategy` hooks fire at step boundaries (after LLM inference completes)
+- `ToolUseStrategy` hooks fire immediately during tool execution (real-time)
+
+This distinction matters for logging and monitoring—`toolStrategy` provides visibility into tool calls as they happen, while `strategy` provides visibility into the agent's reasoning cycle.
+
 ---
 
 ## 11. Streaming
@@ -1414,16 +1488,23 @@ assert(s1.step === s2.step)
 **Agent Types:**
 
 ```pseudocode
-interface AgentOptions {
+// AgentOptions extends LLMOptions for full UPP passthrough
+interface AgentOptions extends Partial<LLMOptions> {
+  // Required
   model: ModelReference
-  params?: Map
-  config?: ProviderConfig
-  execution?: ExecutionStrategy
-  tools?: List<Tool>
-  system?: String
-  structure?: JSONSchema
-  middleware?: List<Middleware>
-  strategy?: AgentStrategy
+
+  // UAP-specific options
+  execution?: ExecutionStrategy      // Default: loop()
+  middleware?: List<Middleware>      // Ordered middleware pipeline
+  strategy?: AgentStrategy           // Agent lifecycle hooks
+
+  // Inherited from LLMOptions (passthrough to llm())
+  // params?: Map                    // Model-specific parameters
+  // config?: ProviderConfig         // Provider infrastructure
+  // tools?: List<Tool>              // Available tools
+  // system?: String                 // System prompt
+  // structure?: JSONSchema          // Structured output schema
+  // toolStrategy?: ToolUseStrategy  // Tool execution hooks
 }
 
 interface Agent {
@@ -1562,10 +1643,11 @@ interface Tool {
 1. **Type Uniformity:** MUST use UPP-1.2 types directly without wrapping
 2. **No Re-exports:** MUST NOT re-export UPP types
 3. **Functional State:** `AgentState` MUST be immutable
-4. **Infinite Defaults:** `maxIterations`/`maxSteps` MUST default to Infinity
+4. **Infinite Defaults:** `maxIterations`/`maxSteps`/`toolStrategy.maxIterations` MUST default to Infinity
 5. **Explicit Sub-Agents:** MUST NOT auto-generate tool schemas from agents
 6. **Identity:** All IDs MUST be UUIDv4
 7. **Serialization:** State MUST be fully serializable
+8. **LLM Passthrough:** `AgentOptions` MUST extend `LLMOptions` for full UPP passthrough
 
 ### 14.3 MUST NOT Requirements
 
@@ -1679,6 +1761,7 @@ coder = agent({
   tools: [Bash, Read, Write, explorerTool],
   system: "You are an expert software engineer.",
   middleware: [logging({ level: "info" })],
+  // UAP-level hooks (step lifecycle)
   strategy: {
     // Developer implements their own limits
     stopCondition: (state) => {
@@ -1688,6 +1771,12 @@ coder = agent({
     },
     onStepStart: (step, state) => print(`Step ${step}`),
     onComplete: (result) => print(`Done: ${result.turn.usage.totalTokens} tokens`),
+  },
+  // UPP-level hooks (real-time tool execution)
+  toolStrategy: {
+    maxIterations: Infinity,  // UAP standard - no artificial limits
+    onToolCall: (tool, params) => print(`🔧 ${tool.name}`),
+    onAfterCall: (tool, params, result) => print(`✓ ${tool.name} completed`),
   },
 })
 

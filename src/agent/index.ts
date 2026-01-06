@@ -42,21 +42,24 @@ import type { Agent, AgentOptions } from './types.ts';
  */
 export function agent(options: AgentOptions): Agent {
   const {
-    model,
-    params = {},
-    config,
+    // UAP-specific options
     execution = loop(),
-    tools = [],
-    system,
-    structure,
     middleware = [],
     strategy = {},
     _llmInstance,
+    // LLM options (passthrough to UPP)
+    model,
+    params = {},
+    config,
+    tools = [],
+    system,
+    structure,
+    toolStrategy,
   } = options;
 
   const agentId = generateUUID();
 
-  // Create the LLM instance (or use injected instance for testing)
+  // Create the LLM instance with full UPP passthrough (or use injected instance for testing)
   const llmInstance: LLMInstance = _llmInstance ?? llm({
     model,
     params,
@@ -64,6 +67,7 @@ export function agent(options: AgentOptions): Agent {
     system,
     structure,
     tools,
+    toolStrategy,
   });
 
   /**
