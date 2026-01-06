@@ -10,7 +10,7 @@
 10. **Shared UI components for reuse** – Create reusable components for shared styling and shared views (e.g., consistently styled dropdowns, standardized buttons, or complex UI elements used in multiple places like an AI input bar). Prefer composition and clear props so shared UI stays consistent, maintainable, and avoids duplicated styling/logic across the app.
 11. **Small, maintainable files** – Aim to keep files small and easy to reason about. When a file grows overly large (≈300 lines of code, excluding whitespace), consider refactoring it into cohesive, maintainable modules **when it is realistic and beneficial**. Refactoring should improve clarity and structure—not split code arbitrarily or create artificial indirection.
 12. **Use icon libraries only** – Use established icon libraries for all icons. Do **not** write or embed custom inline SVGs. Rely on library-provided icons to ensure consistency, readability, and easier maintenance across the codebase.
-
+13. **Comprehensive, intentional testing discipline** – All features and changes must include both **static unit tests** and **live API/integration tests** where applicable. Every code change must explicitly consider its testing impact and ensure **all unit and live tests pass fully**. Tests should be written deliberately: validate real behavior, edge cases, and regressions while avoiding unnecessary duplication, over-mocking, or low-value assertions that create test bloat without increasing confidence.
 
 Default to using Bun instead of Node.js.
 
