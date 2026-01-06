@@ -1,11 +1,33 @@
 {
-  "name": "providerprotocol-agents",
-  "module": "index.ts",
+  "name": "@providerprotocol/agents",
+  "version": "1.0.0",
+  "description": "Unified Agent Protocol (UAP) 1.0 implementation for @providerprotocol/ai",
   "type": "module",
-  "devDependencies": {
-    "@types/bun": "latest"
+  "exports": {
+    ".": "./src/index.ts",
+    "./execution": "./src/execution/index.ts",
+    "./middleware": "./src/middleware/index.ts",
+    "./thread-tree": "./src/thread-tree/index.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "test:unit": "bun test tests/unit",
+    "test:live": "bun test tests/live",
+    "lint": "eslint src tests --ext .ts",
+    "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
+    "@providerprotocol/ai": ">=0.0.10",
     "typescript": "^5"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@providerprotocol/ai": "^0.0.10",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "eslint-config-airbnb-base": "^15.0.0",
+    "eslint-config-airbnb-typescript": "^18.0.0",
+    "eslint-plugin-import": "^2.29.0"
   }
 }

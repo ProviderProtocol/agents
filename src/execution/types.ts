@@ -1,0 +1,231 @@
+import type {
+  LLMInstance,
+  Message,
+  Tool,
+  Turn,
+  ToolCall,
+  ToolExecution,
+  StreamEvent,
+} from '@providerprotocol/ai';
+import type { AgentState, PlanStep } from '../state/index.ts';
+
+/**
+ * Result of agent generation.
+ */
+export interface GenerateResult {
+  /** Standard UPP Turn */
+  turn: Turn;
+  /** New immutable state */
+  state: AgentState;
+}
+
+/**
+ * Agent lifecycle hooks for execution control.
+ */
+export interface AgentStrategy {
+  /** Evaluate if execution should stop */
+  stopCondition?: (state: AgentState) => boolean | Promise<boolean>;
+  /** Called when step begins */
+  onStepStart?: (step: number, state: AgentState) => void;
+  /** Called during reasoning phase (ReAct) */
+  onReason?: (step: number, reasoning: string) => void;
+  /** Called during action phase */
+  onAct?: (step: number, actions: ToolCall[]) => void;
+  /** Called during observation phase */
+  onObserve?: (step: number, observations: ToolExecution[]) => void;
+  /** Called when step completes */
+  onStepEnd?: (step: number, result: { turn: Turn; state: AgentState }) => void;
+  /** Called when execution completes */
+  onComplete?: (result: GenerateResult) => void;
+  /** Called on execution error */
+  onError?: (error: Error, state: AgentState) => void | GenerateResult;
+}
+
+/**
+ * Forward declaration of Agent for use in ExecutionContext.
+ * The actual Agent interface is defined in agent/types.ts.
+ */
+export interface AgentRef {
+  id: string;
+  system?: string;
+}
+
+/**
+ * Context passed to execution strategies.
+ */
+export interface ExecutionContext {
+  /** The agent being executed */
+  agent: AgentRef;
+  /** The bound LLM instance */
+  llm: LLMInstance;
+  /** The user input message */
+  input: Message;
+  /** Current immutable state */
+  state: AgentState;
+  /** Resolved tools */
+  tools: Tool[];
+  /** Agent lifecycle hooks */
+  strategy: AgentStrategy;
+  /** Abort signal for cancellation */
+  signal?: AbortSignal;
+}
+
+/**
+ * Result from execution strategy.
+ */
+export interface ExecutionResult {
+  /** The complete UPP Turn */
+  turn: Turn;
+  /** New immutable state */
+  state: AgentState;
+}
+
+/**
+ * UAP-level event types for streaming.
+ */
+export type UAPEventType =
+  | 'step_start'
+  | 'step_end'
+  | 'reasoning'
+  | 'action'
+  | 'observation'
+  | 'plan_created'
+  | 'plan_step_start'
+  | 'plan_step_end';
+
+/**
+ * Agent stream event - wraps both UAP and UPP events.
+ */
+export interface AgentStreamEvent {
+  /** Event source */
+  source: 'uap' | 'upp';
+
+  /** Present when source === 'uap' */
+  uap?: {
+    type: UAPEventType;
+    step: number;
+    agentId: string;
+    data: Record<string, unknown>;
+  };
+
+  /** Present when source === 'upp' */
+  upp?: StreamEvent;
+}
+
+/**
+ * Streaming result from agent execution.
+ */
+export interface AgentStreamResult {
+  /** Async iterator for stream events */
+  [Symbol.asyncIterator](): AsyncIterator<AgentStreamEvent>;
+  /** Resolves to final result after stream completes */
+  result: Promise<GenerateResult>;
+  /** Abort the stream */
+  abort(): void;
+}
+
+/**
+ * Execution strategy interface.
+ * Strategies define HOW an agent executes (loop, react, plan).
+ */
+export interface ExecutionStrategy {
+  /** Strategy name */
+  name: string;
+  /** Execute the strategy */
+  execute(context: ExecutionContext): Promise<ExecutionResult>;
+  /** Execute with streaming */
+  stream(context: ExecutionContext): AgentStreamResult;
+}
+
+/**
+ * Options for loop() strategy.
+ */
+export interface LoopOptions {
+  /** Maximum tool execution rounds. Default: Infinity */
+  maxIterations?: number;
+}
+
+/**
+ * Options for react() strategy.
+ */
+export interface ReactOptions {
+  /** Maximum reason-act-observe cycles. Default: Infinity */
+  maxSteps?: number;
+  /** Prompt suffix for reasoning phase */
+  reasoningPrompt?: string;
+}
+
+/**
+ * Options for plan() strategy.
+ */
+export interface PlanOptions {
+  /** Maximum steps in a plan. Default: Infinity */
+  maxPlanSteps?: number;
+  /** Allow replanning on failure. Default: true */
+  allowReplan?: boolean;
+  /** Schema for plan structure */
+  planSchema?: Record<string, unknown>;
+}
+
+/**
+ * Internal plan structure used by plan() strategy.
+ */
+export interface ExecutionPlan {
+  steps: PlanStep[];
+  currentStepIndex: number;
+}
+
+/**
+ * Tool dependency options for execution ordering.
+ * These extend the base UPP Tool interface with UAP-specific fields.
+ *
+ * @see UAP-1.0 Spec Section 8.5
+ */
+export interface ToolDependencyOptions {
+  /**
+   * If true, this tool must complete before other tools start.
+   * Sequential tools create a barrier in parallel execution.
+   */
+  sequential?: boolean;
+  /**
+   * Tool names that must complete before this tool can execute.
+   * Used for explicit dependency chains.
+   */
+  dependsOn?: string[];
+}
+
+/**
+ * Extended Tool interface with UAP dependency options.
+ * Use this type when defining tools that need execution ordering.
+ *
+ * @example
+ * ```typescript
+ * const readTool: ToolWithDependencies = {
+ *   name: 'read_file',
+ *   description: 'Read a file',
+ *   parameters: { ... },
+ *   sequential: true, // Must complete before other tools
+ *   run: async (params) => { ... },
+ * };
+ *
+ * const writeTool: ToolWithDependencies = {
+ *   name: 'write_file',
+ *   description: 'Write a file',
+ *   parameters: { ... },
+ *   dependsOn: ['read_file'], // Waits for read_file to complete
+ *   run: async (params) => { ... },
+ * };
+ * ```
+ */
+export interface ToolWithDependencies extends Tool, ToolDependencyOptions {}
+
+/**
+ * Model-driven tool call with optional execution order hint.
+ * Models MAY include an `after` field to signal dependencies.
+ *
+ * @see UAP-1.0 Spec Section 8.6
+ */
+export interface OrderedToolCall extends ToolCall {
+  /** Tool call IDs that must complete before this call executes */
+  after?: string[];
+}
