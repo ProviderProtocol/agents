@@ -1848,6 +1848,9 @@ interface CheckpointStore {
   /** Load the most recent checkpoint for a session */
   load(sessionId: String): Promise<AgentStateJSON | null>
 
+  /** Load metadata for a session without loading full state */
+  loadMetadata(sessionId: String): Promise<CheckpointMetadata | null>
+
   /** Delete all checkpoints for a session */
   delete(sessionId: String): Promise<void>
 
@@ -2121,6 +2124,7 @@ interface Tool {
 interface CheckpointStore {
   save(sessionId: String, state: AgentStateJSON): Promise<void>
   load(sessionId: String): Promise<AgentStateJSON | null>
+  loadMetadata(sessionId: String): Promise<CheckpointMetadata | null>
   delete(sessionId: String): Promise<void>
   list(): Promise<List<String>>
 }

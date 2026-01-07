@@ -46,6 +46,14 @@ export interface CheckpointStore {
   load(sessionId: string): Promise<AgentStateJSON | null>;
 
   /**
+   * Load metadata for a session without loading full state.
+   *
+   * @param sessionId - Session identifier
+   * @returns Checkpoint metadata or null if not found
+   */
+  loadMetadata(sessionId: string): Promise<CheckpointMetadata | null>;
+
+  /**
    * Delete all checkpoints for a session.
    *
    * @param sessionId - Session identifier

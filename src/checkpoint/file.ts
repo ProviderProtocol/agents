@@ -95,6 +95,18 @@ export function fileCheckpoints(options: FileCheckpointOptions = {}): Checkpoint
       }
     },
 
+    async loadMetadata(sessionId: string): Promise<CheckpointMetadata | null> {
+      const { metadataPath } = getPaths(sessionId);
+
+      try {
+        const content = await readFile(metadataPath, 'utf-8');
+        return JSON.parse(content) as CheckpointMetadata;
+      } catch {
+        // File doesn't exist or is invalid
+        return null;
+      }
+    },
+
     async delete(sessionId: string): Promise<void> {
       const sessionDir = join(dir, sessionId);
       try {
