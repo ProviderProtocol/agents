@@ -12,6 +12,7 @@ import type {
   AgentStateJSON,
   PlanStep,
   MessageJSON,
+  SubagentExecutionTrace,
 } from './types.ts';
 import { UAP_VERSION } from './types.ts';
 
@@ -32,6 +33,8 @@ export class AgentState implements AgentStateInterface {
 
   readonly plan: readonly PlanStep[] | undefined;
 
+  readonly subagentTraces: readonly SubagentExecutionTrace[];
+
   private constructor(
     id: string,
     messages: readonly Message[],
@@ -39,6 +42,7 @@ export class AgentState implements AgentStateInterface {
     metadata: Readonly<Record<string, unknown>>,
     reasoning: readonly string[],
     plan: readonly PlanStep[] | undefined,
+    subagentTraces: readonly SubagentExecutionTrace[],
   ) {
     this.id = id;
     this.messages = messages;
@@ -46,6 +50,7 @@ export class AgentState implements AgentStateInterface {
     this.metadata = metadata;
     this.reasoning = reasoning;
     this.plan = plan;
+    this.subagentTraces = subagentTraces;
   }
 
   /**
@@ -59,6 +64,7 @@ export class AgentState implements AgentStateInterface {
       {},
       [],
       undefined,
+      [],
     );
   }
 
@@ -73,6 +79,7 @@ export class AgentState implements AgentStateInterface {
       this.metadata,
       this.reasoning,
       this.plan,
+      this.subagentTraces,
     );
   }
 
@@ -87,6 +94,7 @@ export class AgentState implements AgentStateInterface {
       this.metadata,
       this.reasoning,
       this.plan,
+      this.subagentTraces,
     );
   }
 
@@ -102,6 +110,7 @@ export class AgentState implements AgentStateInterface {
       this.metadata,
       this.reasoning,
       this.plan,
+      this.subagentTraces,
     );
   }
 
@@ -116,6 +125,7 @@ export class AgentState implements AgentStateInterface {
       this.metadata,
       this.reasoning,
       this.plan,
+      this.subagentTraces,
     );
   }
 
@@ -130,6 +140,7 @@ export class AgentState implements AgentStateInterface {
       { ...this.metadata, [key]: value },
       this.reasoning,
       this.plan,
+      this.subagentTraces,
     );
   }
 
@@ -144,6 +155,7 @@ export class AgentState implements AgentStateInterface {
       this.metadata,
       [...this.reasoning, reasoning],
       this.plan,
+      this.subagentTraces,
     );
   }
 
@@ -158,6 +170,23 @@ export class AgentState implements AgentStateInterface {
       this.metadata,
       this.reasoning,
       [...plan],
+      this.subagentTraces,
+    );
+  }
+
+  /**
+   * Return new state with sub-agent trace added.
+   * Per UAP spec Section 8.8.
+   */
+  withSubagentTrace(trace: SubagentExecutionTrace): AgentState {
+    return new AgentState(
+      generateUUID(),
+      this.messages,
+      this.step,
+      this.metadata,
+      this.reasoning,
+      this.plan,
+      [...this.subagentTraces, trace],
     );
   }
 
@@ -173,6 +202,9 @@ export class AgentState implements AgentStateInterface {
       metadata: { ...this.metadata },
       reasoning: [...this.reasoning],
       plan: this.plan ? this.plan.map((s) => ({ ...s })) : undefined,
+      subagentTraces: this.subagentTraces.length > 0
+        ? this.subagentTraces.map((t) => ({ ...t }))
+        : undefined,
     };
   }
 
@@ -191,6 +223,7 @@ export class AgentState implements AgentStateInterface {
       json.metadata,
       json.reasoning,
       json.plan ? json.plan.map((s) => ({ ...s })) : undefined,
+      json.subagentTraces ? json.subagentTraces.map((t) => ({ ...t })) : [],
     );
   }
 }
@@ -257,4 +290,12 @@ function deserializeMessage(json: MessageJSON): Message {
   }
 }
 
-export type { AgentStateInterface, AgentStateJSON, PlanStep, PlanStepStatus } from './types.ts';
+export type {
+  AgentStateInterface,
+  AgentStateJSON,
+  PlanStep,
+  PlanStepStatus,
+  SubagentExecutionTrace,
+  SubagentExecutionTraceJSON,
+  ToolExecutionTrace,
+} from './types.ts';

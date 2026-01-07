@@ -35,12 +35,16 @@ export function react(options: ReactOptions = {}): ExecutionStrategy {
     async execute(context: ExecutionContext): Promise<ExecutionResult> {
       const { llm, input, state, strategy, signal } = context;
 
-      let currentState = state;
+      // Add input message to state and set agentId in metadata
+      // This ensures checkpoints include the full conversation
+      let currentState = state
+        .withMessage(input)
+        .withMetadata('agentId', context.agent.id);
       let step = 0;
       let finalTurn: Turn | undefined;
 
-      // Build initial messages
-      const messages = [...currentState.messages, input];
+      // Messages for LLM generation (includes input we just added)
+      const messages = [...currentState.messages];
 
       while (true) {
         step++;
@@ -113,9 +117,15 @@ export function react(options: ReactOptions = {}): ExecutionStrategy {
         throw new Error('No turn generated');
       }
 
+      // Include sessionId in state metadata if checkpointing is enabled
+      let finalState = currentState;
+      if (context.sessionId) {
+        finalState = currentState.withMetadata('sessionId', context.sessionId);
+      }
+
       const result: ExecutionResult = {
         turn: finalTurn,
-        state: currentState,
+        state: finalState,
       };
 
       strategy.onComplete?.(result);
@@ -143,11 +153,16 @@ export function react(options: ReactOptions = {}): ExecutionStrategy {
       });
 
       async function* generateEvents(): AsyncGenerator<AgentStreamEvent> {
-        let currentState = state;
+        // Add input message to state and set agentId in metadata
+        // This ensures checkpoints include the full conversation
+        let currentState = state
+          .withMessage(input)
+          .withMetadata('agentId', context.agent.id);
         let step = 0;
         let finalTurn: Turn | undefined;
 
-        const messages = [...currentState.messages, input];
+        // Messages for LLM generation (includes input we just added)
+        const messages = [...currentState.messages];
 
         try {
           while (!aborted) {
@@ -287,9 +302,15 @@ export function react(options: ReactOptions = {}): ExecutionStrategy {
             throw new Error('No turn generated');
           }
 
+          // Include sessionId in state metadata if checkpointing is enabled
+          let finalState = currentState;
+          if (context.sessionId) {
+            finalState = currentState.withMetadata('sessionId', context.sessionId);
+          }
+
           const result: ExecutionResult = {
             turn: finalTurn,
-            state: currentState,
+            state: finalState,
           };
 
           strategy.onComplete?.(result);

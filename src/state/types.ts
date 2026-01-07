@@ -1,9 +1,74 @@
-import type { Message, MessageMetadata } from '@providerprotocol/ai';
+import type { Message, MessageMetadata, TokenUsage } from '@providerprotocol/ai';
 
 /**
  * Status of a plan step during execution.
  */
 export type PlanStepStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
+
+/**
+ * A single tool execution trace from a sub-agent.
+ * Per UAP spec Section 8.8.
+ */
+export interface ToolExecutionTrace {
+  /** Name of the tool */
+  toolName: string;
+  /** Tool call ID */
+  toolCallId?: string;
+  /** Arguments passed to the tool */
+  arguments: Record<string, unknown>;
+  /** Tool result */
+  result: string;
+  /** Whether the tool errored */
+  isError?: boolean;
+  /** Execution time in milliseconds */
+  duration?: number;
+}
+
+/**
+ * Sub-agent execution trace for checkpoint persistence.
+ * Per UAP spec Section 8.8.
+ */
+export interface SubagentExecutionTrace {
+  /** Unique ID of the sub-agent instance */
+  subagentId: string;
+  /** Type/name of the sub-agent */
+  subagentType: string;
+  /** Tool call ID that spawned this sub-agent */
+  parentToolCallId: string;
+  /** The task given to the sub-agent */
+  prompt: string;
+  /** Start timestamp (ms since epoch) */
+  startTime: number;
+  /** End timestamp (ms since epoch) */
+  endTime: number;
+  /** Whether execution succeeded */
+  success: boolean;
+  /** Sub-agent's response (if successful) */
+  result?: string;
+  /** Error message (if failed) */
+  error?: string;
+  /** Tools used by sub-agent */
+  toolExecutions?: ToolExecutionTrace[];
+  /** Token usage for sub-agent */
+  usage?: TokenUsage;
+}
+
+/**
+ * Serialized form of SubagentExecutionTrace.
+ */
+export interface SubagentExecutionTraceJSON {
+  subagentId: string;
+  subagentType: string;
+  parentToolCallId: string;
+  prompt: string;
+  startTime: number;
+  endTime: number;
+  success: boolean;
+  result?: string;
+  error?: string;
+  toolExecutions?: ToolExecutionTrace[];
+  usage?: TokenUsage;
+}
 
 /**
  * A single step in an execution plan.
@@ -50,6 +115,8 @@ export interface AgentStateJSON {
   reasoning: string[];
   /** Execution plan (for Plan strategy) */
   plan?: PlanStepJSON[];
+  /** Sub-agent execution traces (per UAP spec Section 8.8) */
+  subagentTraces?: SubagentExecutionTraceJSON[];
 }
 
 /**
@@ -79,6 +146,8 @@ export interface AgentStateInterface {
   readonly reasoning: readonly string[];
   /** Execution plan (for Plan strategy) */
   readonly plan: readonly PlanStep[] | undefined;
+  /** Sub-agent execution traces (per UAP spec Section 8.8) */
+  readonly subagentTraces: readonly SubagentExecutionTrace[];
 
   /** Return new state with message added */
   withMessage(message: Message): AgentStateInterface;
@@ -94,6 +163,8 @@ export interface AgentStateInterface {
   withReasoning(reasoning: string): AgentStateInterface;
   /** Return new state with plan set */
   withPlan(plan: PlanStep[]): AgentStateInterface;
+  /** Return new state with sub-agent trace added */
+  withSubagentTrace(trace: SubagentExecutionTrace): AgentStateInterface;
   /** Serialize to JSON */
   toJSON(): AgentStateJSON;
 }

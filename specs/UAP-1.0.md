@@ -32,6 +32,7 @@ UAP extends UPP-1.2 with agent-level abstractions including decoupled execution 
     - [10.4 ToolUseStrategy (UPP Passthrough)](#104-toolusestrategy-upp-passthrough)
 11. [Streaming](#11-streaming)
 12. [Serialization](#12-serialization)
+    - [12.4 Checkpointing](#124-checkpointing)
 13. [Data Type Definitions](#13-data-type-definitions)
 14. [Conformance](#14-conformance)
 15. [Security Considerations](#15-security-considerations)
@@ -401,8 +402,16 @@ All agent entities MUST have UUIDv4 identifiers:
 | Entity | ID Field | Description |
 |--------|----------|-------------|
 | Agent | `agent.id` | Unique agent instance ID |
-| AgentState | `state.id` | State snapshot ID |
-| Step | `step.id` | Unique step ID within execution |
+| AgentState | `state.id` | State snapshot ID (changes on mutation) |
+| Session | `sessionId` | Session identifier for checkpointing |
+| Checkpoint | `checkpointId` | Unique checkpoint snapshot ID |
+
+**Note:** Step numbers (`step`) are integers representing sequential execution order, not UUIDs.
+
+**Session ID Generation:**
+- When `checkpoints` is provided to `agent()`, a `sessionId` MUST be generated if not provided
+- Session IDs MUST be UUIDv4
+- The `sessionId` MUST be included in `state.metadata.sessionId` after execution
 
 Turn identity comes from UPP. UAP tracks execution context separately:
 
@@ -411,6 +420,7 @@ Turn identity comes from UPP. UAP tracks execution context separately:
 context = {
   agentId: agent.id,
   stateId: state.id,
+  sessionId?: sessionId,         // For checkpointing
   parentContext?: parentContext,  // For sub-agent calls
 }
 ```
@@ -437,6 +447,8 @@ agent(options: AgentOptions) -> Agent
 | `execution` | ExecutionStrategy | No | Execution strategy (default: loop()) |
 | `middleware` | List<Middleware> | No | Ordered middleware pipeline |
 | `strategy` | AgentStrategy | No | Agent lifecycle hooks |
+| `checkpoints` | CheckpointStore | No | Checkpoint store for step-level persistence |
+| `sessionId` | String | No | Session identifier (auto-generated if not provided) |
 
 **LLM Passthrough Fields (from LLMOptions):**
 
@@ -1362,7 +1374,9 @@ Sub-agent events use the following `UAPEventType` values:
     toolName: String,
     arguments: Map,
     result: String,
+    duration?: Integer,     // Execution time in milliseconds
   }>,
+  usage?: TokenUsage,       // Token usage for sub-agent execution
 }
 ```
 
@@ -1437,6 +1451,67 @@ explorerTool: Tool = {
 
 1. Implementations SHOULD provide helper utilities for creating sub-agent tools with event propagation
 2. TUI/CLI implementations SHOULD display nested sub-agent events with visual indentation or hierarchy
+
+### 8.8 Sub-Agent Trace Persistence
+
+Sub-agent execution traces MUST be persisted in AgentState for checkpoint recovery. This enables full restoration of hierarchical agent execution including nested tool calls, durations, and token usage.
+
+**SubagentExecutionTrace Structure:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `subagentId` | String | Yes | Unique ID of the sub-agent instance |
+| `subagentType` | String | Yes | Type/name of the sub-agent |
+| `parentToolCallId` | String | Yes | Tool call ID that spawned this sub-agent |
+| `prompt` | String | Yes | The task given to the sub-agent |
+| `startTime` | Integer | Yes | Start timestamp (ms since epoch) |
+| `endTime` | Integer | Yes | End timestamp (ms since epoch) |
+| `success` | Boolean | Yes | Whether execution succeeded |
+| `result` | String | No | Sub-agent's response (if successful) |
+| `error` | String | No | Error message (if failed) |
+| `toolExecutions` | List<ToolExecutionTrace> | No | Tools used by sub-agent |
+| `usage` | TokenUsage | No | Token usage for sub-agent |
+
+**ToolExecutionTrace Structure:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `toolName` | String | Yes | Name of the tool |
+| `toolCallId` | String | No | Tool call ID |
+| `arguments` | Map | Yes | Arguments passed to tool |
+| `result` | String | Yes | Tool result |
+| `isError` | Boolean | No | Whether tool errored |
+| `duration` | Integer | No | Execution time in milliseconds |
+
+**AgentState Integration:**
+
+```pseudocode
+interface AgentState {
+  // ... existing fields ...
+  subagentTraces?: readonly SubagentExecutionTrace[]
+
+  // Add a sub-agent trace to state
+  withSubagentTrace(trace: SubagentExecutionTrace) -> AgentState
+}
+```
+
+**Serialization:**
+
+Sub-agent traces MUST be included in `AgentStateJSON` for checkpoint persistence:
+
+```pseudocode
+interface AgentStateJSON {
+  // ... existing fields ...
+  subagentTraces?: List<SubagentExecutionTraceJSON>
+}
+```
+
+**MUST Requirements:**
+
+1. Sub-agent traces MUST be collected when `subagent_end` events are emitted
+2. Traces MUST include all tool executions from the sub-agent
+3. Traces MUST be serialized in checkpoints
+4. Traces MUST be restored when loading from checkpoint
 
 ---
 
@@ -1739,6 +1814,7 @@ assert(s1.step === s2.step)
 | `metadata` | Map | Yes | User metadata |
 | `reasoning` | List<String> | No | Reasoning traces |
 | `plan` | List<PlanStepJSON> | No | Execution plan |
+| `subagentTraces` | List<SubagentExecutionTraceJSON> | No | Sub-agent execution traces (see Section 8.8) |
 
 ### 12.2 Thread Tree Serialization
 
@@ -1757,6 +1833,164 @@ assert(s1.step === s2.step)
 3. Timestamps MUST use ISO 8601 format
 4. Binary data MUST be base64 encoded
 5. Version MUST be checked during deserialization
+
+### 12.4 Checkpointing
+
+Checkpointing enables step-level persistence for crash recovery and session resume. The SDK provides a pluggable `CheckpointStore` interface with a reference file-based implementation.
+
+#### 12.4.1 CheckpointStore Interface
+
+```pseudocode
+interface CheckpointStore {
+  /** Save a checkpoint at the current state */
+  save(sessionId: String, state: AgentStateJSON): Promise<void>
+
+  /** Load the most recent checkpoint for a session */
+  load(sessionId: String): Promise<AgentStateJSON | null>
+
+  /** Delete all checkpoints for a session */
+  delete(sessionId: String): Promise<void>
+
+  /** List all session IDs with checkpoints */
+  list(): Promise<List<String>>
+}
+```
+
+#### 12.4.2 Checkpoint Metadata
+
+Each checkpoint MAY include additional metadata:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sessionId` | String | Session identifier (UUIDv4 or user-provided) |
+| `checkpointId` | String | Unique checkpoint ID |
+| `timestamp` | String | ISO 8601 timestamp |
+| `step` | Integer | Step number at checkpoint |
+| `agentId` | String | Agent instance ID |
+
+#### 12.4.3 fileCheckpoints() Reference Implementation
+
+```pseudocode
+fileCheckpoints(options?: FileCheckpointOptions) -> CheckpointStore
+```
+
+**FileCheckpointOptions Structure:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `dir` | String | ".checkpoints" | Directory for checkpoint files |
+
+**File Structure:**
+
+```
+{dir}/
+  {sessionId}/
+    checkpoint.json     # Latest state
+    metadata.json       # Session metadata
+```
+
+**Usage:**
+
+```pseudocode
+import { agent, AgentState } from "agents"
+import { fileCheckpoints } from "agents/checkpoint"
+
+// Create checkpoint store
+store = fileCheckpoints({ dir: "./checkpoints" })
+
+// Create agent with checkpointing
+coder = agent({
+  model: anthropic("claude-sonnet-4-20250514"),
+  tools: [Bash, Read, Write],
+  checkpoints: store,         // Enable checkpointing
+  sessionId: "my-session",    // Optional: auto-generated if not provided
+})
+
+// Checkpoints are saved automatically at each step_end
+{ turn, state } = await coder.generate("Fix the bug", AgentState.initial())
+```
+
+#### 12.4.4 Resume from Checkpoint
+
+```pseudocode
+// Resume from existing session
+store = fileCheckpoints({ dir: "./checkpoints" })
+saved = await store.load("my-session")
+
+if (saved) {
+  restored = AgentState.fromJSON(saved)
+  { turn, state } = await coder.generate("Continue", restored)
+} else {
+  { turn, state } = await coder.generate("Start fresh", AgentState.initial())
+}
+```
+
+#### 12.4.5 Checkpoint Strategy Integration
+
+When `checkpoints` is provided to `agent()`, execution strategies MUST:
+
+1. Call `store.save(sessionId, state.toJSON())` after each `step_end` event
+2. Generate `sessionId` if not provided (UUIDv4)
+3. Include `sessionId` in returned state metadata
+
+```pseudocode
+// Automatic checkpointing in loop strategy
+while (!done) {
+  // ... execute step ...
+
+  strategy.onStepEnd?.(step, { turn, state: currentState })
+
+  // Auto-checkpoint after step completes
+  if (checkpointStore) {
+    await checkpointStore.save(sessionId, currentState.toJSON())
+  }
+}
+```
+
+#### 12.4.6 Custom CheckpointStore Implementations
+
+Developers MAY implement custom stores for different backends:
+
+```pseudocode
+// Redis checkpoint store
+redisCheckpoints = (client: RedisClient): CheckpointStore => ({
+  save: async (sessionId, state) => {
+    await client.set(`checkpoint:${sessionId}`, JSON.stringify(state))
+  },
+  load: async (sessionId) => {
+    data = await client.get(`checkpoint:${sessionId}`)
+    return data ? JSON.parse(data) : null
+  },
+  delete: async (sessionId) => {
+    await client.del(`checkpoint:${sessionId}`)
+  },
+  list: async () => {
+    keys = await client.keys("checkpoint:*")
+    return keys.map(k => k.replace("checkpoint:", ""))
+  },
+})
+
+// Usage
+agent({
+  model: anthropic("claude-sonnet-4-20250514"),
+  checkpoints: redisCheckpoints(redisClient),
+  sessionId: "user-123-task-456",
+})
+```
+
+#### 12.4.7 MUST Requirements for Checkpointing
+
+1. Checkpoints MUST be saved after each `step_end` event when a store is configured
+2. Checkpoint saves MUST NOT block execution (fire-and-forget with error logging)
+3. `sessionId` MUST be preserved across checkpoint/restore cycles
+4. Restored state MUST be indistinguishable from live state for execution purposes
+5. Failed checkpoint saves SHOULD log errors but MUST NOT throw
+
+#### 12.4.8 SHOULD Requirements for Checkpointing
+
+1. Implementations SHOULD provide a file-based reference implementation
+2. Checkpoint stores SHOULD handle concurrent access safely
+3. Implementations SHOULD support checkpoint compression for large states
 
 ---
 
@@ -1881,6 +2115,29 @@ interface Tool {
 }
 ```
 
+**Checkpoint Types:**
+
+```pseudocode
+interface CheckpointStore {
+  save(sessionId: String, state: AgentStateJSON): Promise<void>
+  load(sessionId: String): Promise<AgentStateJSON | null>
+  delete(sessionId: String): Promise<void>
+  list(): Promise<List<String>>
+}
+
+interface FileCheckpointOptions {
+  dir?: String  // Default: ".checkpoints"
+}
+
+interface CheckpointMetadata {
+  sessionId: String
+  checkpointId: String
+  timestamp: String        // ISO 8601
+  step: Integer
+  agentId: String
+}
+```
+
 ### 13.3 Export List
 
 **Entry Points:**
@@ -1894,6 +2151,10 @@ interface Tool {
 
 **Middleware (from agents/middleware):**
 - `logging`
+
+**Checkpointing (from agents/checkpoint):**
+- `fileCheckpoints`
+- `CheckpointStore` (type)
 
 **Classes:**
 - `ThreadTree`

@@ -46,6 +46,8 @@ export function agent(options: AgentOptions): Agent {
     execution = loop(),
     middleware = [],
     strategy = {},
+    checkpoints,
+    sessionId: providedSessionId,
     _llmInstance,
     // LLM options (passthrough to UPP)
     model,
@@ -58,6 +60,9 @@ export function agent(options: AgentOptions): Agent {
   } = options;
 
   const agentId = generateUUID();
+  // Generate sessionId (UUIDv4) if checkpoints provided but no sessionId
+  // Per UAP spec Section 3.4: Session IDs MUST be UUIDv4
+  const sessionId = checkpoints ? (providedSessionId ?? generateUUID()) : providedSessionId;
 
   // Create the LLM instance with full UPP passthrough (or use injected instance for testing)
   const llmInstance: LLMInstance = _llmInstance ?? llm({
@@ -161,6 +166,8 @@ export function agent(options: AgentOptions): Agent {
       tools,
       strategy: resolvedStrategy,
       signal,
+      checkpoints,
+      sessionId,
     };
   }
 

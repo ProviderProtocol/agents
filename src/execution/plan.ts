@@ -64,11 +64,16 @@ export function plan(options: PlanOptions = {}): ExecutionStrategy {
     async execute(context: ExecutionContext): Promise<ExecutionResult> {
       const { llm, input, state, strategy, signal } = context;
 
-      let currentState = state;
+      // Add input message to state and set agentId in metadata
+      // This ensures checkpoints include the full conversation
+      let currentState = state
+        .withMessage(input)
+        .withMetadata('agentId', context.agent.id);
       let step = 0;
       let finalTurn: Turn | undefined;
 
-      const messages = [...currentState.messages, input];
+      // Messages for LLM generation (includes input we just added)
+      const messages = [...currentState.messages];
 
       // PLANNING PHASE
       step++;
@@ -205,9 +210,15 @@ export function plan(options: PlanOptions = {}): ExecutionStrategy {
         finalTurn = planTurn; // Use plan turn if no execution happened
       }
 
+      // Include sessionId in state metadata if checkpointing is enabled
+      let finalState = currentState;
+      if (context.sessionId) {
+        finalState = currentState.withMetadata('sessionId', context.sessionId);
+      }
+
       const result: ExecutionResult = {
         turn: finalTurn,
-        state: currentState,
+        state: finalState,
       };
 
       strategy.onComplete?.(result);
@@ -235,11 +246,16 @@ export function plan(options: PlanOptions = {}): ExecutionStrategy {
       });
 
       async function* generateEvents(): AsyncGenerator<AgentStreamEvent> {
-        let currentState = state;
+        // Add input message to state and set agentId in metadata
+        // This ensures checkpoints include the full conversation
+        let currentState = state
+          .withMessage(input)
+          .withMetadata('agentId', context.agent.id);
         let step = 0;
         let finalTurn: Turn | undefined;
 
-        const messages = [...currentState.messages, input];
+        // Messages for LLM generation (includes input we just added)
+        const messages = [...currentState.messages];
 
         try {
           // PLANNING PHASE
@@ -443,9 +459,15 @@ export function plan(options: PlanOptions = {}): ExecutionStrategy {
             finalTurn = planTurn;
           }
 
+          // Include sessionId in state metadata if checkpointing is enabled
+          let finalState = currentState;
+          if (context.sessionId) {
+            finalState = currentState.withMetadata('sessionId', context.sessionId);
+          }
+
           const result: ExecutionResult = {
             turn: finalTurn,
-            state: currentState,
+            state: finalState,
           };
 
           strategy.onComplete?.(result);

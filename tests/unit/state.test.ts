@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach } from 'bun:test';
 import { UserMessage, AssistantMessage } from '@providerprotocol/ai';
 import { AgentState } from '../../src/state/index.ts';
-import type { PlanStep } from '../../src/state/index.ts';
+import type { PlanStep, SubagentExecutionTrace } from '../../src/state/index.ts';
 
 describe('AgentState', () => {
   describe('initial()', () => {
@@ -28,6 +28,11 @@ describe('AgentState', () => {
     test('creates state with undefined plan', () => {
       const state = AgentState.initial();
       expect(state.plan).toBeUndefined();
+    });
+
+    test('creates state with empty subagentTraces', () => {
+      const state = AgentState.initial();
+      expect(state.subagentTraces).toEqual([]);
     });
 
     test('creates state with unique UUIDv4 id', () => {
@@ -273,14 +278,127 @@ describe('AgentState', () => {
     });
   });
 
+  describe('withSubagentTrace()', () => {
+    test('adds subagent trace', () => {
+      const state = AgentState.initial();
+      const trace: SubagentExecutionTrace = {
+        subagentId: 'agent-123',
+        subagentType: 'explorer',
+        parentToolCallId: 'tool-456',
+        prompt: 'Find all TypeScript files',
+        startTime: 1000,
+        endTime: 2000,
+        success: true,
+        result: 'Found 10 files',
+        toolExecutions: [
+          {
+            toolName: 'Glob',
+            toolCallId: 'glob-001',
+            arguments: { pattern: '**/*.ts' },
+            result: 'file1.ts, file2.ts',
+            duration: 50,
+          },
+        ],
+      };
+
+      const newState = state.withSubagentTrace(trace);
+
+      expect(newState.subagentTraces).toHaveLength(1);
+      expect(newState.subagentTraces[0]).toEqual(trace);
+    });
+
+    test('appends to existing traces', () => {
+      const trace1: SubagentExecutionTrace = {
+        subagentId: 'agent-1',
+        subagentType: 'explorer',
+        parentToolCallId: 'tool-1',
+        prompt: 'First task',
+        startTime: 1000,
+        endTime: 1500,
+        success: true,
+      };
+
+      const trace2: SubagentExecutionTrace = {
+        subagentId: 'agent-2',
+        subagentType: 'planner',
+        parentToolCallId: 'tool-2',
+        prompt: 'Second task',
+        startTime: 2000,
+        endTime: 2500,
+        success: true,
+      };
+
+      const state = AgentState.initial()
+        .withSubagentTrace(trace1);
+      const newState = state.withSubagentTrace(trace2);
+
+      expect(newState.subagentTraces).toHaveLength(2);
+      expect(newState.subagentTraces[0]?.subagentId).toBe('agent-1');
+      expect(newState.subagentTraces[1]?.subagentId).toBe('agent-2');
+    });
+
+    test('does not modify original state', () => {
+      const state = AgentState.initial();
+      const trace: SubagentExecutionTrace = {
+        subagentId: 'agent-123',
+        subagentType: 'explorer',
+        parentToolCallId: 'tool-456',
+        prompt: 'Test',
+        startTime: 1000,
+        endTime: 2000,
+        success: true,
+      };
+
+      state.withSubagentTrace(trace);
+
+      expect(state.subagentTraces).toHaveLength(0);
+    });
+
+    test('preserves other state properties', () => {
+      const state = AgentState.initial()
+        .withMessage(new UserMessage('Hello'))
+        .withStep(3)
+        .withMetadata('key', 'value');
+
+      const trace: SubagentExecutionTrace = {
+        subagentId: 'agent-123',
+        subagentType: 'explorer',
+        parentToolCallId: 'tool-456',
+        prompt: 'Test',
+        startTime: 1000,
+        endTime: 2000,
+        success: true,
+      };
+
+      const newState = state.withSubagentTrace(trace);
+
+      expect(newState.messages).toHaveLength(1);
+      expect(newState.step).toBe(3);
+      expect(newState.metadata).toEqual({ key: 'value' });
+    });
+  });
+
   describe('serialization', () => {
     test('toJSON() serializes all properties', () => {
+      const trace: SubagentExecutionTrace = {
+        subagentId: 'agent-123',
+        subagentType: 'explorer',
+        parentToolCallId: 'tool-456',
+        prompt: 'Test prompt',
+        startTime: 1000,
+        endTime: 2000,
+        success: true,
+        result: 'Test result',
+        toolExecutions: [{ toolName: 'Glob', arguments: {}, result: 'files' }],
+      };
+
       const state = AgentState.initial()
         .withMessage(new UserMessage('Hello'))
         .withStep(3)
         .withMetadata('key', 'value')
         .withReasoning('Thinking...')
-        .withPlan([{ id: '1', description: 'Step', dependsOn: [], status: 'pending' }]);
+        .withPlan([{ id: '1', description: 'Step', dependsOn: [], status: 'pending' }])
+        .withSubagentTrace(trace);
 
       const json = state.toJSON();
 
@@ -291,14 +409,34 @@ describe('AgentState', () => {
       expect(json.metadata).toEqual({ key: 'value' });
       expect(json.reasoning).toEqual(['Thinking...']);
       expect(json.plan).toHaveLength(1);
+      expect(json.subagentTraces).toHaveLength(1);
+      expect(json.subagentTraces?.[0]?.subagentId).toBe('agent-123');
+    });
+
+    test('toJSON() omits subagentTraces when empty', () => {
+      const state = AgentState.initial();
+      const json = state.toJSON();
+
+      expect(json.subagentTraces).toBeUndefined();
     });
 
     test('fromJSON() deserializes correctly', () => {
+      const trace: SubagentExecutionTrace = {
+        subagentId: 'agent-123',
+        subagentType: 'explorer',
+        parentToolCallId: 'tool-456',
+        prompt: 'Test',
+        startTime: 1000,
+        endTime: 2000,
+        success: true,
+      };
+
       const original = AgentState.initial()
         .withMessage(new UserMessage('Hello'))
         .withStep(3)
         .withMetadata('key', 'value')
-        .withReasoning('Thinking...');
+        .withReasoning('Thinking...')
+        .withSubagentTrace(trace);
 
       const json = original.toJSON();
       const restored = AgentState.fromJSON(json);
@@ -308,9 +446,46 @@ describe('AgentState', () => {
       expect(restored.step).toBe(3);
       expect(restored.metadata).toEqual({ key: 'value' });
       expect(restored.reasoning).toEqual(['Thinking...']);
+      expect(restored.subagentTraces).toHaveLength(1);
+      expect(restored.subagentTraces[0]?.subagentId).toBe('agent-123');
+    });
+
+    test('fromJSON() handles missing subagentTraces', () => {
+      const json = {
+        version: '1.0.0',
+        id: 'test-id',
+        messages: [],
+        step: 0,
+        metadata: {},
+        reasoning: [],
+        // No subagentTraces field
+      };
+
+      const restored = AgentState.fromJSON(json);
+      expect(restored.subagentTraces).toEqual([]);
     });
 
     test('round-trip preserves data', () => {
+      const trace: SubagentExecutionTrace = {
+        subagentId: 'agent-roundtrip',
+        subagentType: 'explorer',
+        parentToolCallId: 'tool-rt',
+        prompt: 'Round trip test',
+        startTime: 1000,
+        endTime: 2000,
+        success: true,
+        result: 'Found it',
+        toolExecutions: [
+          {
+            toolName: 'Glob',
+            toolCallId: 'glob-rt',
+            arguments: { pattern: '*.ts' },
+            result: 'file.ts',
+            duration: 100,
+          },
+        ],
+      };
+
       const original = AgentState.initial()
         .withMessage(new UserMessage('Hello'))
         .withMessage(new AssistantMessage('Hi'))
@@ -321,7 +496,8 @@ describe('AgentState', () => {
         .withPlan([
           { id: '1', description: 'A', dependsOn: [], status: 'completed' },
           { id: '2', description: 'B', dependsOn: ['1'], status: 'pending' },
-        ]);
+        ])
+        .withSubagentTrace(trace);
 
       const json = original.toJSON();
       const restored = AgentState.fromJSON(json);
@@ -332,6 +508,9 @@ describe('AgentState', () => {
       expect(restored.metadata).toEqual(original.metadata);
       expect(restored.reasoning).toEqual([...original.reasoning]);
       expect(restored.plan?.length).toBe(original.plan?.length);
+      expect(restored.subagentTraces.length).toBe(original.subagentTraces.length);
+      expect(restored.subagentTraces[0]?.subagentId).toBe('agent-roundtrip');
+      expect(restored.subagentTraces[0]?.toolExecutions?.[0]?.toolName).toBe('Glob');
     });
 
     test('fromJSON() throws on version mismatch', () => {
@@ -359,6 +538,15 @@ describe('AgentState', () => {
         () => state.withMetadata('key', 'value'),
         () => state.withReasoning('thinking'),
         () => state.withPlan([{ id: '1', description: 'test', dependsOn: [], status: 'pending' }]),
+        () => state.withSubagentTrace({
+          subagentId: 'test',
+          subagentType: 'explorer',
+          parentToolCallId: 'tool-1',
+          prompt: 'test',
+          startTime: 1000,
+          endTime: 2000,
+          success: true,
+        }),
       ];
 
       for (const op of operations) {

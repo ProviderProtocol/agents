@@ -14,6 +14,7 @@ import type {
   AgentStreamResult,
 } from '../execution/types.ts';
 import type { Middleware } from '../middleware/types.ts';
+import type { CheckpointStore } from '../checkpoint/types.ts';
 
 /**
  * Options for creating an agent.
@@ -28,6 +29,10 @@ export interface AgentOptions extends Partial<Omit<LLMOptions, 'model'>> {
   middleware?: Middleware[];
   /** Agent lifecycle hooks */
   strategy?: AgentStrategy;
+  /** Checkpoint store for step-level persistence */
+  checkpoints?: CheckpointStore;
+  /** Session identifier for checkpointing (auto-generated if not provided) */
+  sessionId?: string;
   /** @internal Pre-created LLM instance for testing */
   _llmInstance?: LLMInstance;
 }

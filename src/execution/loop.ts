@@ -34,12 +34,16 @@ export function loop(options: LoopOptions = {}): ExecutionStrategy {
     async execute(context: ExecutionContext): Promise<ExecutionResult> {
       const { llm, input, state, strategy, signal } = context;
 
-      let currentState = state;
+      // Add input message to state and set agentId in metadata
+      // This ensures checkpoints include the full conversation
+      let currentState = state
+        .withMessage(input)
+        .withMetadata('agentId', context.agent.id);
       let iteration = 0;
       let finalTurn: Turn | undefined;
 
-      // Add input to messages for generation
-      const inputMessages = [...currentState.messages, input];
+      // Messages for LLM generation (includes input we just added)
+      const inputMessages = [...currentState.messages];
 
       while (true) {
         iteration++;
@@ -73,6 +77,13 @@ export function loop(options: LoopOptions = {}): ExecutionStrategy {
         // Call step end hook
         strategy.onStepEnd?.(iteration, { turn, state: currentState });
 
+        // Save checkpoint after step completes (fire-and-forget, log errors)
+        if (context.checkpoints && context.sessionId) {
+          context.checkpoints.save(context.sessionId, currentState.toJSON()).catch((err) => {
+            console.error('[UAP] Checkpoint save failed:', err);
+          });
+        }
+
         // Check stop condition
         const shouldStop = await strategy.stopCondition?.(currentState);
         if (shouldStop) {
@@ -100,9 +111,16 @@ export function loop(options: LoopOptions = {}): ExecutionStrategy {
         throw new Error('No turn generated');
       }
 
+      // Include sessionId in state metadata if checkpointing is enabled
+      // Per UAP spec Section 3.4: sessionId MUST be included in state.metadata
+      let finalState = currentState;
+      if (context.sessionId) {
+        finalState = currentState.withMetadata('sessionId', context.sessionId);
+      }
+
       const result: ExecutionResult = {
         turn: finalTurn,
-        state: currentState,
+        state: finalState,
       };
 
       strategy.onComplete?.(result);
@@ -131,11 +149,16 @@ export function loop(options: LoopOptions = {}): ExecutionStrategy {
       });
 
       async function* generateEvents(): AsyncGenerator<AgentStreamEvent> {
-        let currentState = state;
+        // Add input message to state and set agentId in metadata
+        // This ensures checkpoints include the full conversation
+        let currentState = state
+          .withMessage(input)
+          .withMetadata('agentId', context.agent.id);
         let iteration = 0;
         let finalTurn: Turn | undefined;
 
-        const inputMessages = [...currentState.messages, input];
+        // Messages for LLM generation (includes input we just added)
+        const inputMessages = [...currentState.messages];
 
         try {
           while (!aborted) {
@@ -210,6 +233,13 @@ export function loop(options: LoopOptions = {}): ExecutionStrategy {
 
             strategy.onStepEnd?.(iteration, { turn, state: currentState });
 
+            // Save checkpoint after step completes (fire-and-forget, log errors)
+            if (context.checkpoints && context.sessionId) {
+              context.checkpoints.save(context.sessionId, currentState.toJSON()).catch((err) => {
+                console.error('[UAP] Checkpoint save failed:', err);
+              });
+            }
+
             yield {
               source: 'uap',
               uap: {
@@ -241,9 +271,16 @@ export function loop(options: LoopOptions = {}): ExecutionStrategy {
             throw new Error('No turn generated');
           }
 
+          // Include sessionId in state metadata if checkpointing is enabled
+          // Per UAP spec Section 3.4: sessionId MUST be included in state.metadata
+          let finalState = currentState;
+          if (context.sessionId) {
+            finalState = currentState.withMetadata('sessionId', context.sessionId);
+          }
+
           const result: ExecutionResult = {
             turn: finalTurn,
-            state: currentState,
+            state: finalState,
           };
 
           strategy.onComplete?.(result);

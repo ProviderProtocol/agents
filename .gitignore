@@ -38,3 +38,8 @@ reference/
 
 # Hide examples for now
 examples/
+
+# Session checkpoints (user data)
+.checkpoints/
+.test-checkpoints/
+.test-live-checkpoints/

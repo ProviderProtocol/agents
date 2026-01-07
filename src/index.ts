@@ -62,8 +62,19 @@ export type {
   AgentStateJSON,
   PlanStep,
   PlanStepStatus,
+  SubagentExecutionTrace,
+  SubagentExecutionTraceJSON,
+  ToolExecutionTrace,
 } from './state/index.ts';
 
 // Thread tree exports (Level 3 - optional)
 export { ThreadTree, ThreadNode } from './thread-tree/index.ts';
 export type { ThreadTreeJSON, ThreadNodeJSON } from './thread-tree/index.ts';
+
+// Checkpoint exports (Section 12.4)
+export type {
+  CheckpointStore,
+  FileCheckpointOptions,
+  CheckpointMetadata,
+  CheckpointData,
+} from './checkpoint/index.ts';

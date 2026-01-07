@@ -6,8 +6,10 @@ import type {
   ToolCall,
   ToolExecution,
   StreamEvent,
+  TokenUsage,
 } from '@providerprotocol/ai';
 import type { AgentState, PlanStep } from '../state/index.ts';
+import type { CheckpointStore } from '../checkpoint/types.ts';
 
 /**
  * Result of agent generation.
@@ -68,6 +70,10 @@ export interface ExecutionContext {
   strategy: AgentStrategy;
   /** Abort signal for cancellation */
   signal?: AbortSignal;
+  /** Checkpoint store for persistence (optional) */
+  checkpoints?: CheckpointStore;
+  /** Session ID for checkpointing */
+  sessionId?: string;
 }
 
 /**
@@ -291,6 +297,8 @@ export interface SubagentEndEvent extends SubagentEventBase {
     arguments: Record<string, unknown>;
     result: string;
   }>;
+  /** Token usage for this sub-agent run */
+  usage?: TokenUsage;
 }
 
 /**
