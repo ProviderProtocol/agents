@@ -11,6 +11,9 @@ A powerful, flexible agent framework implementing the Unified Agent Protocol (UA
 - **Streaming** - Full streaming support with UAP and UPP events
 - **Checkpointing** - Built-in session persistence and recovery
 - **Thread Trees** - Branching conversation support
+- **Sub-Agent Tools** - Helper utilities for creating tools that spawn sub-agents with event propagation
+- **Tool Context Injection** - Pass execution context (agentId, stateId, toolCallId) to tools
+- **Tool Ordering** - Execute tool calls respecting dependencies and sequential barriers
 - **Type-Safe** - 100% TypeScript with full type inference
 
 ## Installation

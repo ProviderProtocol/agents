@@ -568,6 +568,9 @@ Agent-level events from execution strategies:
 | `plan_created` | `{ step, agentId, data: { plan } }` | Plan generated |
 | `plan_step_start` | `{ step, agentId, data: { planStep } }` | Plan step began |
 | `plan_step_end` | `{ step, agentId, data: { planStep } }` | Plan step done |
+| `subagent_start` | `{ subagentId, subagentType, parentToolCallId, prompt, timestamp }` | Sub-agent started |
+| `subagent_event` | `{ subagentId, subagentType, parentToolCallId, innerEvent }` | Sub-agent inner event |
+| `subagent_end` | `{ subagentId, subagentType, parentToolCallId, success, result, error, timestamp, toolExecutions, usage }` | Sub-agent completed |
 
 ### UPP Events (source: 'upp')
 
@@ -608,28 +611,85 @@ const writeTool: ToolWithDependencies = {
 
 ## Sub-agents
 
-Agents can spawn sub-agents via tools:
+Agents can spawn sub-agents via tools. The SDK provides utilities for proper event propagation.
+
+### Using createSubAgentTool()
+
+The recommended way to create sub-agent tools with full event propagation:
 
 ```typescript
-import { agent, AgentState } from '@providerprotocol/agents';
+import { agent, createSubAgentTool } from '@providerprotocol/agents';
+import { anthropic } from '@providerprotocol/ai/anthropic';
+
+// Create the sub-agent
+const explorer = agent({
+  model: anthropic('claude-3-5-haiku-latest'),
+  params: { max_tokens: 2000 },
+  tools: [globTool, grepTool, readTool],
+  system: 'You explore codebases to find relevant information.',
+});
+
+// Wrap as a tool with event propagation
+const explorerTool = createSubAgentTool({
+  agent: explorer,
+  name: 'explore',
+  description: 'Explore codebase for information',
+  parameters: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'What to search for' },
+    },
+    required: ['query'],
+  },
+  buildPrompt: (params) => `Find: ${params.query}`,
+  subagentType: 'explorer',  // Used in events
+  stream: true,              // Forward inner events (default: true)
+});
+
+// Use in parent agent
+const coder = agent({
+  model: anthropic('claude-sonnet-4-20250514'),
+  tools: [explorerTool, writeTool],
+});
+```
+
+### Sub-agent Events
+
+When using `createSubAgentTool()`, these events are automatically emitted:
+
+| Event | Fields | Description |
+|-------|--------|-------------|
+| `subagent_start` | `subagentId`, `subagentType`, `parentToolCallId`, `prompt`, `timestamp` | Sub-agent execution began |
+| `subagent_event` | `subagentId`, `subagentType`, `parentToolCallId`, `innerEvent` | Forwarded event from sub-agent |
+| `subagent_end` | `subagentId`, `subagentType`, `parentToolCallId`, `success`, `result`, `error`, `timestamp`, `toolExecutions`, `usage` | Sub-agent completed |
+
+### Handling Sub-agent Events
+
+```typescript
 import type { OnSubagentEvent } from '@providerprotocol/agents';
 
-// Sub-agent event callback
 const onSubagentEvent: OnSubagentEvent = (event) => {
   switch (event.type) {
     case 'subagent_start':
-      console.log(`Sub-agent ${event.subagentType} started`);
+      console.log(`Sub-agent ${event.subagentType} started: ${event.prompt}`);
       break;
     case 'subagent_event':
-      console.log(`Sub-agent event: ${event.innerEvent.source}`);
+      if (event.innerEvent.source === 'upp' && event.innerEvent.upp?.type === 'text_delta') {
+        process.stdout.write(event.innerEvent.upp.delta.text ?? '');
+      }
       break;
     case 'subagent_end':
-      console.log(`Sub-agent completed: ${event.success}`);
+      console.log(`Sub-agent completed: ${event.success ? event.result : event.error}`);
       break;
   }
 };
+```
 
-// Create sub-agent tool
+### Manual Sub-agent Tool
+
+For custom control, you can create sub-agent tools manually:
+
+```typescript
 const explorerTool = {
   name: 'explore',
   description: 'Explore codebase for information',
@@ -650,6 +710,145 @@ const explorerTool = {
     const turn = await explorer.query(params.query);
     return turn.response.text;
   },
+};
+```
+
+## Tool Context Injection
+
+Tools can receive execution context (agentId, stateId, toolCallId) for tracing and sub-agent event propagation.
+
+### Context-Aware Tools
+
+Define tools that accept a second context parameter:
+
+```typescript
+import type { ToolExecutionContext } from '@providerprotocol/agents';
+
+const myTool = {
+  name: 'my_tool',
+  description: 'A context-aware tool',
+  parameters: { type: 'object', properties: {} },
+  run: async (
+    params: Record<string, unknown>,
+    context?: ToolExecutionContext,
+  ) => {
+    console.log('Agent ID:', context?.agentId);
+    console.log('State ID:', context?.stateId);
+    console.log('Tool Call ID:', context?.toolCallId);
+
+    // Forward sub-agent events
+    if (context?.onSubagentEvent) {
+      context.onSubagentEvent({
+        type: 'subagent_start',
+        subagentId: 'sub-1',
+        subagentType: 'helper',
+        parentToolCallId: context.toolCallId,
+        prompt: 'Task prompt',
+        timestamp: Date.now(),
+      });
+    }
+
+    return 'result';
+  },
+};
+```
+
+### Injecting Context into Tools
+
+Use `injectToolContext()` to wrap tools with context injection:
+
+```typescript
+import { injectToolContext } from '@providerprotocol/agents';
+
+const wrappedTools = injectToolContext(
+  [tool1, tool2],
+  executionContext,
+  { onSubagentEvent: handleSubagentEvents },
+);
+```
+
+### Checking for Context-Aware Tools
+
+```typescript
+import { isContextAwareTool } from '@providerprotocol/agents';
+
+if (isContextAwareTool(myTool)) {
+  // Tool accepts context as second parameter
+}
+```
+
+### Wrapping Tools with Context Handlers
+
+```typescript
+import { withToolContext } from '@providerprotocol/agents';
+
+const wrapped = withToolContext(originalTool, async (params, context) => {
+  // Custom logic with access to context
+  console.log('Executing with context:', context?.agentId);
+  return await originalTool.run(params);
+});
+```
+
+## Tool Ordering
+
+Execute tool calls respecting dependencies and sequential barriers.
+
+### Declaring Tool Dependencies
+
+```typescript
+import type { ToolWithDependencies } from '@providerprotocol/agents/execution';
+
+const readTool: ToolWithDependencies = {
+  name: 'read_file',
+  description: 'Read file contents',
+  parameters: { /* ... */ },
+  sequential: true,  // Creates a barrier - must complete before others
+  run: async (params) => { /* ... */ },
+};
+
+const writeTool: ToolWithDependencies = {
+  name: 'write_file',
+  description: 'Write file contents',
+  parameters: { /* ... */ },
+  dependsOn: ['read_file'],  // Explicit dependency
+  run: async (params) => { /* ... */ },
+};
+```
+
+### Executing Ordered Tool Calls
+
+```typescript
+import { executeOrderedToolCalls } from '@providerprotocol/agents/execution';
+
+const results = await executeOrderedToolCalls(
+  toolCalls,  // ToolCall[] from model response
+  tools,      // Tool[] with optional dependencies
+  async (call, tool) => {
+    // Custom executor
+    return await tool.run(call.arguments);
+  },
+);
+
+// Results include timing and error info
+for (const result of results) {
+  console.log(`${result.call.toolName}: ${result.isError ? result.error : result.result}`);
+  console.log(`Duration: ${result.duration}ms`);
+}
+```
+
+### Model-Driven Ordering
+
+Models can hint at ordering via `after` field:
+
+```typescript
+import type { OrderedToolCall } from '@providerprotocol/agents/execution';
+
+// Model response might include:
+const toolCall: OrderedToolCall = {
+  toolCallId: 'call-2',
+  toolName: 'write_file',
+  arguments: { path: 'out.txt', content: '...' },
+  after: ['call-1'],  // Execute after call-1 completes
 };
 ```
 
@@ -782,6 +981,33 @@ import type {
 // Execution strategies
 import { loop, react, plan } from '@providerprotocol/agents/execution';
 import type { LoopOptions, ReactOptions, PlanOptions } from '@providerprotocol/agents/execution';
+
+// Tool ordering
+import { executeOrderedToolCalls, orderToolCalls } from '@providerprotocol/agents/execution';
+import type {
+  ToolWithDependencies,
+  OrderedToolCall,
+  ExecutionGroup,
+  ToolExecutionResult,
+  ToolExecutor,
+} from '@providerprotocol/agents/execution';
+
+// Sub-agent tools
+import { createSubAgentTool } from '@providerprotocol/agents';
+import type { CreateSubAgentToolOptions, SubAgentToolRun } from '@providerprotocol/agents';
+
+// Tool context injection
+import { injectToolContext, withToolContext, isContextAwareTool } from '@providerprotocol/agents';
+import type { ToolExecutionContext, ContextAwareToolRun } from '@providerprotocol/agents';
+
+// Sub-agent events
+import type {
+  SubagentEvent,
+  SubagentStartEvent,
+  SubagentInnerEvent,
+  SubagentEndEvent,
+  OnSubagentEvent,
+} from '@providerprotocol/agents';
 
 // Middleware
 import { logging } from '@providerprotocol/agents/middleware';
