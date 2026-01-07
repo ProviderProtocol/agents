@@ -14,6 +14,8 @@
 
 `.env` contains all AI provider keys. 
 
+>Persist only atomic values; do not persist derived attributes. Calculated fields such as duration or netCost should be computed at runtime to prevent data inconsistency 
+
 Default to using Bun instead of Node.js.
 
 - Use `bun <file>` instead of `node <file>` or `ts-node <file>`
