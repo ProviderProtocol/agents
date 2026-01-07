@@ -6,7 +6,7 @@
  * @see UAP-1.0 Spec Section 12.4.3
  */
 
-import { mkdir, readdir, rm } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AgentStateJSON } from '../state/types.ts';
 import type { CheckpointStore, FileCheckpointOptions, CheckpointMetadata } from './types.ts';
@@ -79,20 +79,15 @@ export function fileCheckpoints(options: FileCheckpointOptions = {}): Checkpoint
       };
 
       // Write checkpoint first, then metadata (sequential to avoid race conditions)
-      await Bun.write(checkpointPath, JSON.stringify(state, null, 2));
-      await Bun.write(metadataPath, JSON.stringify(metadata, null, 2));
+      await writeFile(checkpointPath, JSON.stringify(state, null, 2), 'utf-8');
+      await writeFile(metadataPath, JSON.stringify(metadata, null, 2), 'utf-8');
     },
 
     async load(sessionId: string): Promise<AgentStateJSON | null> {
       const { checkpointPath } = getPaths(sessionId);
 
       try {
-        const file = Bun.file(checkpointPath);
-        const exists = await file.exists();
-        if (!exists) {
-          return null;
-        }
-        const content = await file.text();
+        const content = await readFile(checkpointPath, 'utf-8');
         return JSON.parse(content) as AgentStateJSON;
       } catch {
         // File doesn't exist or is invalid
