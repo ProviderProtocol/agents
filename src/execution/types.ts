@@ -313,3 +313,46 @@ export type SubagentEvent = SubagentStartEvent | SubagentInnerEvent | SubagentEn
  * Tools that spawn sub-agents SHOULD accept this callback.
  */
 export type OnSubagentEvent = (event: SubagentEvent) => void;
+
+/**
+ * Context injected into tools during execution.
+ * Per UAP-1.0 Section 8.4, ExecutionStrategy MUST inject this context
+ * when invoking tools that accept a second parameter.
+ *
+ * @see UAP-1.0 Spec Section 8.4
+ */
+export interface ToolExecutionContext {
+  /** Agent instance ID */
+  agentId: string;
+  /** Current state snapshot ID */
+  stateId: string;
+  /** Tool call ID from the model response */
+  toolCallId: string;
+  /** Callback for sub-agent events */
+  onSubagentEvent?: OnSubagentEvent;
+}
+
+/**
+ * Type for a tool that accepts execution context as a second parameter.
+ * Tools can optionally accept this context for sub-agent inheritance
+ * and event propagation.
+ *
+ * @example
+ * ```typescript
+ * const contextAwareTool: Tool = {
+ *   name: 'my_tool',
+ *   description: 'Tool that uses execution context',
+ *   parameters: { ... },
+ *   run: async (params, context?: ToolExecutionContext) => {
+ *     if (context?.onSubagentEvent) {
+ *       // Can propagate sub-agent events
+ *     }
+ *     return 'result';
+ *   },
+ * };
+ * ```
+ */
+export type ContextAwareToolRun = (
+  params: Record<string, unknown>,
+  context?: ToolExecutionContext,
+) => Promise<unknown>;

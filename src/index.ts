@@ -78,3 +78,22 @@ export type {
   CheckpointMetadata,
   CheckpointData,
 } from './checkpoint/index.ts';
+
+// Sub-agent tool helper (Section 8.7)
+export { createSubAgentTool } from './subagent/index.ts';
+export type {
+  CreateSubAgentToolOptions,
+  SubAgentToolRun,
+} from './subagent/index.ts';
+
+// Tool context injection (Section 8.4)
+export {
+  injectToolContext,
+  isContextAwareTool,
+  withToolContext,
+} from './execution/tool-context.ts';
+export type {
+  ToolExecutionContext,
+  ContextAwareToolRun,
+} from './execution/types.ts';
+export type { InjectToolContextOptions } from './execution/tool-context.ts';

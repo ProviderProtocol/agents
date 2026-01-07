@@ -360,14 +360,20 @@ describe('agent()', () => {
     test('preserves conversation history', async () => {
       let callCount = 0;
 
+      // Mock strategy that simulates real behavior:
+      // 1. Adds input to state
+      // 2. Adds turn messages to state
       const mockStrategy: ExecutionStrategy = {
         name: 'mock',
         async execute(ctx) {
           callCount++;
-          return {
-            turn: createMockTurn(`Response ${callCount}`),
-            state: ctx.state.withStep(callCount),
-          };
+          const turn = createMockTurn(`Response ${callCount}`);
+          // Simulate real strategy: add input + response to state
+          const newState = ctx.state
+            .withMessage(ctx.input)
+            .withMessages(turn.messages)
+            .withStep(callCount);
+          return { turn, state: newState };
         },
         stream() {
           return {
@@ -390,13 +396,132 @@ describe('agent()', () => {
       const state0 = AgentState.initial();
       const result1 = await a.ask('First message', state0);
 
-      // State should have the input message added
-      expect(result1.state.messages.length).toBeGreaterThan(0);
+      // State should have input + response (2 messages)
+      expect(result1.state.messages.length).toBe(2);
 
       const result2 = await a.ask('Second message', result1.state);
 
-      // State should have accumulated messages
-      expect(result2.state.messages.length).toBeGreaterThan(result1.state.messages.length);
+      // State should have accumulated: input1 + response1 + input2 + response2 (4 messages)
+      expect(result2.state.messages.length).toBe(4);
+    });
+
+    test('does not duplicate input message', async () => {
+      const mockStrategy: ExecutionStrategy = {
+        name: 'mock',
+        async execute(ctx) {
+          const turn = createMockTurn('Response');
+          // Simulate real strategy: add input + response to state
+          return {
+            turn,
+            state: ctx.state
+              .withMessage(ctx.input)
+              .withMessages(turn.messages)
+              .withStep(1),
+          };
+        },
+        stream() {
+          return {
+            async *[Symbol.asyncIterator] () {},
+            result: Promise.resolve({
+              turn: createMockTurn(),
+              state: AgentState.initial(),
+            }),
+            abort: () => {},
+          };
+        },
+      };
+
+      const a = agent({
+        model: mockModel,
+        execution: mockStrategy,
+        _llmInstance: mockLLM,
+      });
+
+      const result = await a.ask('hello', AgentState.initial());
+
+      // Count how many times 'hello' appears in user messages
+      // UPP UserMessage uses 'type' not 'role', and content is an array
+      const userMessages = result.state.messages.filter(
+        (m) => (m as { type?: string }).type === 'user',
+      );
+
+      // Check that 'hello' appears exactly once
+      const helloMessages = userMessages.filter((m) => {
+        const content = (m as InstanceType<typeof UserMessage>).content;
+        if (Array.isArray(content)) {
+          return content.some((c) => c.type === 'text' && c.text === 'hello');
+        }
+        return content === 'hello';
+      });
+
+      // Should be exactly 1, not duplicated
+      expect(helloMessages.length).toBe(1);
+    });
+
+    test('preserves middleware before modifications', async () => {
+      // Middleware that prunes messages via withContext
+      const pruningMiddleware: Middleware = {
+        name: 'pruning',
+        before: async (ctx) => ({
+          ...ctx,
+          // Clear all previous messages (simulating context window management)
+          state: ctx.state.withContext([]),
+        }),
+      };
+
+      const mockStrategy: ExecutionStrategy = {
+        name: 'mock',
+        async execute(ctx) {
+          const turn = createMockTurn('Response');
+          return {
+            turn,
+            state: ctx.state
+              .withMessage(ctx.input)
+              .withMessages(turn.messages)
+              .withStep(1),
+          };
+        },
+        stream() {
+          return {
+            async *[Symbol.asyncIterator] () {},
+            result: Promise.resolve({
+              turn: createMockTurn(),
+              state: AgentState.initial(),
+            }),
+            abort: () => {},
+          };
+        },
+      };
+
+      const a = agent({
+        model: mockModel,
+        middleware: [pruningMiddleware],
+        execution: mockStrategy,
+        _llmInstance: mockLLM,
+      });
+
+      // State with old messages that should be pruned
+      const stateWithHistory = AgentState.initial()
+        .withMessage(new UserMessage('old message 1'))
+        .withMessage(new AssistantMessage('old response 1'));
+
+      const result = await a.ask('new message', stateWithHistory);
+
+      // Middleware should have pruned old messages
+      // Result should only have: new message + response (2 messages)
+      expect(result.state.messages.length).toBe(2);
+
+      // Old messages should NOT be present
+      // UPP UserMessage uses 'type' not 'role', and content is an array
+      const hasOldMessage = result.state.messages.some((m) => {
+        if ((m as { type?: string }).type !== 'user') return false;
+        const content = (m as InstanceType<typeof UserMessage>).content;
+        if (Array.isArray(content)) {
+          return content.some((c) => c.type === 'text' && c.text === 'old message 1');
+        }
+        return content === 'old message 1';
+      });
+      expect(hasOldMessage).toBe(false);
     });
   });
 

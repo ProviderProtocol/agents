@@ -4,6 +4,7 @@ import {
   orderToolCalls,
   hasToolDependencies,
   hasCallDependencies,
+  executeOrderedToolCalls,
 } from '../../../src/execution/tool-ordering.ts';
 import type {
   ToolWithDependencies,
@@ -306,5 +307,168 @@ describe('hasCallDependencies()', () => {
     };
 
     expect(hasCallDependencies([call])).toBe(false);
+  });
+});
+
+describe('executeOrderedToolCalls()', () => {
+  // Helper to track execution order
+  function createTrackingTool(
+    name: string,
+    executionLog: string[],
+    delay = 0,
+    options?: { sequential?: boolean; dependsOn?: string[] },
+  ): ToolWithDependencies {
+    return {
+      name,
+      description: `Tool ${name}`,
+      parameters: { type: 'object', properties: {} },
+      run: async () => {
+        executionLog.push(`${name}-start`);
+        if (delay > 0) {
+          await new Promise((r) => setTimeout(r, delay));
+        }
+        executionLog.push(`${name}-end`);
+        return `result-${name}`;
+      },
+      sequential: options?.sequential,
+      dependsOn: options?.dependsOn,
+    };
+  }
+
+  test('executes tools in parallel when no dependencies', async () => {
+    const log: string[] = [];
+    const tools = [
+      createTrackingTool('a', log, 20),
+      createTrackingTool('b', log, 10),
+    ];
+    const calls = [
+      createToolCall('a'),
+      createToolCall('b'),
+    ];
+
+    const results = await executeOrderedToolCalls(calls, tools, async (call, tool) => tool.run(call.arguments));
+
+    expect(results).toHaveLength(2);
+    expect(results.every((r) => !r.isError)).toBe(true);
+
+    // Both should start before either ends (parallel)
+    const aStartIdx = log.indexOf('a-start');
+    const bStartIdx = log.indexOf('b-start');
+    const aEndIdx = log.indexOf('a-end');
+    const bEndIdx = log.indexOf('b-end');
+
+    // Both started before either ended
+    expect(aStartIdx).toBeLessThan(aEndIdx);
+    expect(bStartIdx).toBeLessThan(bEndIdx);
+  });
+
+  test('executes sequential tools one at a time', async () => {
+    const log: string[] = [];
+    const tools = [
+      createTrackingTool('a', log, 10, { sequential: true }),
+      createTrackingTool('b', log, 10, { sequential: true }),
+    ];
+    const calls = [
+      createToolCall('a'),
+      createToolCall('b'),
+    ];
+
+    await executeOrderedToolCalls(calls, tools, async (call, tool) => tool.run(call.arguments));
+
+    // Sequential: a must complete before b starts
+    const aEndIdx = log.indexOf('a-end');
+    const bStartIdx = log.indexOf('b-start');
+    expect(aEndIdx).toBeLessThan(bStartIdx);
+  });
+
+  test('respects dependsOn ordering', async () => {
+    const log: string[] = [];
+    const tools = [
+      createTrackingTool('a', log, 10),
+      createTrackingTool('b', log, 10, { dependsOn: ['a'] }),
+    ];
+    const calls = [
+      createToolCall('a'),
+      createToolCall('b'),
+    ];
+
+    await executeOrderedToolCalls(calls, tools, async (call, tool) => tool.run(call.arguments));
+
+    // b depends on a, so a must complete before b starts
+    const aEndIdx = log.indexOf('a-end');
+    const bStartIdx = log.indexOf('b-start');
+    expect(aEndIdx).toBeLessThan(bStartIdx);
+  });
+
+  test('handles tool execution errors', async () => {
+    const tools = [createTool('failing')];
+    const calls = [createToolCall('failing')];
+
+    const results = await executeOrderedToolCalls(
+      calls,
+      tools,
+      async () => {
+        throw new Error('Tool failed');
+      },
+    );
+
+    expect(results).toHaveLength(1);
+    const result = results[0];
+    expect(result).toBeDefined();
+    expect(result?.isError).toBe(true);
+    expect(result?.error).toBe('Tool failed');
+  });
+
+  test('handles missing tool', async () => {
+    const tools: ToolWithDependencies[] = [];
+    const calls = [createToolCall('unknown')];
+
+    const results = await executeOrderedToolCalls(calls, tools, async (call, tool) => tool.run(call.arguments));
+
+    expect(results).toHaveLength(1);
+    const result = results[0];
+    expect(result).toBeDefined();
+    expect(result?.isError).toBe(true);
+    expect(result?.error).toContain('not found');
+  });
+
+  test('returns empty array for empty calls', async () => {
+    const results = await executeOrderedToolCalls([], [], async () => 'result');
+    expect(results).toEqual([]);
+  });
+
+  test('includes execution duration', async () => {
+    const tools = [createTool('timed')];
+    const calls = [createToolCall('timed')];
+
+    const results = await executeOrderedToolCalls(
+      calls,
+      tools,
+      async () => {
+        await new Promise((r) => setTimeout(r, 20));
+        return 'done';
+      },
+    );
+
+    const result = results[0];
+    expect(result).toBeDefined();
+    expect(result?.duration).toBeGreaterThanOrEqual(15);
+  });
+
+  test('passes call arguments to executor', async () => {
+    let receivedArgs: Record<string, unknown> | undefined;
+    const tools = [createTool('argcheck')];
+    const call = { ...createToolCall('argcheck'), arguments: { key: 'value' } };
+
+    await executeOrderedToolCalls(
+      [call],
+      tools,
+      async (c) => {
+        receivedArgs = c.arguments as Record<string, unknown>;
+        return 'done';
+      },
+    );
+
+    expect(receivedArgs).toEqual({ key: 'value' });
   });
 });

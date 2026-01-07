@@ -184,3 +184,156 @@ export function hasCallDependencies(toolCalls: ToolCall[]): boolean {
   }
   return false;
 }
+
+/**
+ * Result of executing a tool call.
+ */
+export interface ToolExecutionResult {
+  /** The tool call that was executed */
+  call: ToolCall;
+  /** The result from the tool */
+  result: unknown;
+  /** Whether the tool threw an error */
+  isError: boolean;
+  /** Error message if isError is true */
+  error?: string;
+  /** Execution duration in milliseconds */
+  duration: number;
+}
+
+/**
+ * Function type for executing a single tool call.
+ */
+export type ToolExecutor = (call: ToolCall, tool: Tool) => Promise<unknown>;
+
+/**
+ * Execute tool calls respecting dependency ordering.
+ *
+ * This function takes tool calls, orders them using `orderToolCalls()`,
+ * and executes them respecting barriers (sequential tools) and
+ * dependencies (dependsOn, after).
+ *
+ * Per UAP-1.0 Sections 8.5 and 8.6:
+ * - Tools with `sequential: true` execute alone (barrier)
+ * - Tools with `dependsOn` wait for named tools to complete
+ * - Tool calls with `after` wait for specific call IDs to complete
+ *
+ * @param toolCalls - Tool calls from the model response
+ * @param tools - Tool definitions with potential dependencies
+ * @param executor - Function to execute a single tool call
+ * @returns Array of execution results in completion order
+ *
+ * @example
+ * ```typescript
+ * import { executeOrderedToolCalls } from '@providerprotocol/agents/execution';
+ *
+ * // Define tools with dependencies
+ * const readTool: ToolWithDependencies = {
+ *   name: 'read_file',
+ *   sequential: true, // Must complete before others
+ *   run: async (params) => readFile(params.path),
+ * };
+ *
+ * const processTool: ToolWithDependencies = {
+ *   name: 'process',
+ *   dependsOn: ['read_file'], // Wait for read_file
+ *   run: async (params) => process(params.data),
+ * };
+ *
+ * // Execute with ordering
+ * const results = await executeOrderedToolCalls(
+ *   turn.response.toolCalls,
+ *   [readTool, processTool],
+ *   async (call, tool) => tool.run(call.arguments),
+ * );
+ * ```
+ */
+export async function executeOrderedToolCalls(
+  toolCalls: ToolCall[],
+  tools: Tool[],
+  executor: ToolExecutor,
+): Promise<ToolExecutionResult[]> {
+  if (toolCalls.length === 0) {
+    return [];
+  }
+
+  const toolMap = new Map<string, Tool>();
+  for (const tool of tools) {
+    toolMap.set(tool.name, tool);
+  }
+
+  const groups = orderToolCalls(toolCalls, tools);
+  const results: ToolExecutionResult[] = [];
+
+  for (const group of groups) {
+    if (group.isBarrier) {
+      // Sequential execution - one at a time
+      for (const call of group.calls) {
+        const tool = toolMap.get(call.toolName);
+        if (!tool) {
+          results.push({
+            call,
+            result: null,
+            isError: true,
+            error: `Tool not found: ${call.toolName}`,
+            duration: 0,
+          });
+          continue;
+        }
+
+        const result = await executeOne(call, tool, executor);
+        results.push(result);
+      }
+    } else {
+      // Parallel execution
+      const groupResults = await Promise.all(
+        group.calls.map(async (call) => {
+          const tool = toolMap.get(call.toolName);
+          if (!tool) {
+            return {
+              call,
+              result: null,
+              isError: true,
+              error: `Tool not found: ${call.toolName}`,
+              duration: 0,
+            };
+          }
+          return executeOne(call, tool, executor);
+        }),
+      );
+      results.push(...groupResults);
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Execute a single tool call with timing and error handling.
+ */
+async function executeOne(
+  call: ToolCall,
+  tool: Tool,
+  executor: ToolExecutor,
+): Promise<ToolExecutionResult> {
+  const startTime = Date.now();
+
+  try {
+    const result = await executor(call, tool);
+    return {
+      call,
+      result,
+      isError: false,
+      duration: Date.now() - startTime,
+    };
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    return {
+      call,
+      result: null,
+      isError: true,
+      error: err.message,
+      duration: Date.now() - startTime,
+    };
+  }
+}

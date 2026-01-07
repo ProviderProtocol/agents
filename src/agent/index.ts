@@ -321,39 +321,14 @@ export function agent(options: AgentOptions): Agent {
       input: string | Message,
       state: AgentState,
     ): Promise<GenerateResult> {
-      const normalizedInput = normalizeInput(input);
-
-      // Generate with original state - execution strategy adds input to LLM call
-      const result = await agentInstance.generate(normalizedInput, state);
-
-      // Build final state with correct message order:
-      // original messages + input + response messages from this turn
-      const responseMessages = result.state.messages.slice(state.messages.length);
-      const finalState = state
-        .withMessage(normalizedInput)
-        .withMessages(responseMessages)
-        .withStep(result.state.step);
-
-      // Preserve metadata from execution
-      let stateWithMetadata = finalState;
-      for (const [key, value] of Object.entries(result.state.metadata)) {
-        stateWithMetadata = stateWithMetadata.withMetadata(key, value);
-      }
-
-      // Preserve reasoning traces
-      for (const reasoning of result.state.reasoning) {
-        stateWithMetadata = stateWithMetadata.withReasoning(reasoning);
-      }
-
-      // Preserve plan if present
-      if (result.state.plan) {
-        stateWithMetadata = stateWithMetadata.withPlan([...result.state.plan]);
-      }
-
-      return {
-        turn: result.turn,
-        state: stateWithMetadata,
-      };
+      // Per UAP-1.0 Section 4.6: ask() is a convenience method for multi-turn execution.
+      // The execution strategy handles adding input to state and appending response.
+      // We delegate directly to generate() to:
+      // 1. Preserve middleware before() modifications (e.g., context pruning via withContext)
+      // 2. Preserve middleware after() modifications
+      // 3. Avoid message duplication (strategy already adds input)
+      // 4. Return the correctly built state from the execution pipeline
+      return agentInstance.generate(input, state);
     },
 
     async query(input: string | Message): Promise<Turn> {

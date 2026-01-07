@@ -588,6 +588,17 @@ ask(input, state) {
 }
 ```
 
+**Implementation Note:** The pseudocode above describes the *conceptual* behavior of `ask()`. In practice, execution strategies typically add input to state internally (see Section 5). Implementations where strategies handle message addition MAY implement `ask()` as a simple delegation to `generate()`:
+
+```pseudocode
+// Alternative implementation when strategies add input:
+ask(input, state) {
+  return this.generate(input, state)
+}
+```
+
+The key requirement is that the returned state contains the complete conversation history (input + response). Implementations MUST NOT duplicate messages regardless of approach.
+
 ### 4.7 query() Method
 
 Stateless single-turn execution. Creates ephemeral state, executes, and discards state. Useful for one-off questions that don't need context.
