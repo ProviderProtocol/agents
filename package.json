@@ -3,6 +3,12 @@
   "version": "0.0.1",
   "description": "Unified Agent Protocol (UAP) 1.0 implementation for @providerprotocol/ai",
   "type": "module",
+  "author": {
+    "name": "Provider Protocol"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./execution": "./src/execution/index.ts",
