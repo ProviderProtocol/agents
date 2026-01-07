@@ -13,21 +13,26 @@
     "test": "bun test",
     "test:unit": "bun test tests/unit",
     "test:live": "bun test tests/live",
-    "lint": "eslint src tests --ext .ts",
+    "lint": "eslint src tests examples --ext .ts,.tsx",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@providerprotocol/ai": ">=0.0.10",
-    "typescript": "^5"
+    "@providerprotocol/ai": ">=0.0.11",
+    "typescript": "^5.9.3"
   },
   "devDependencies": {
-    "@types/bun": "latest",
-    "@providerprotocol/ai": "^0.0.10",
-    "@typescript-eslint/eslint-plugin": "^8.0.0",
-    "@typescript-eslint/parser": "^8.0.0",
-    "eslint": "^9.0.0",
-    "eslint-config-airbnb-base": "^15.0.0",
-    "eslint-config-airbnb-typescript": "^18.0.0",
-    "eslint-plugin-import": "^2.29.0"
+    "@inkjs/ui": "^2.0.0",
+    "@providerprotocol/ai": "^0.0.11",
+    "@types/bun": "^1.3.5",
+    "@types/react": "^19.2.7",
+    "@typescript-eslint/eslint-plugin": "^8.52.0",
+    "@typescript-eslint/parser": "^8.52.0",
+    "cli-highlight": "^2.1.11",
+    "eslint": "^9.39.2",
+    "eslint-plugin-import": "^2.32.0",
+    "ink": "^6.6.0",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
+    "react": "^19.2.3"
   }
 }

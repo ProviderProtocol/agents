@@ -26,4 +26,12 @@ export type {
   ToolDependencyOptions,
   ToolWithDependencies,
   OrderedToolCall,
+  // Sub-agent event types (Section 8.7)
+  SubagentEventType,
+  SubagentEventBase,
+  SubagentStartEvent,
+  SubagentInnerEvent,
+  SubagentEndEvent,
+  SubagentEvent,
+  OnSubagentEvent,
 } from './types.ts';

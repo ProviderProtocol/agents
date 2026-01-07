@@ -91,7 +91,10 @@ export type UAPEventType =
   | 'observation'
   | 'plan_created'
   | 'plan_step_start'
-  | 'plan_step_end';
+  | 'plan_step_end'
+  | 'subagent_start'
+  | 'subagent_event'
+  | 'subagent_end';
 
 /**
  * Agent stream event - wraps both UAP and UPP events.
@@ -229,3 +232,76 @@ export interface OrderedToolCall extends ToolCall {
   /** Tool call IDs that must complete before this call executes */
   after?: string[];
 }
+
+/**
+ * Sub-agent event types for hierarchical agent execution.
+ *
+ * @see UAP-1.0 Spec Section 8.7
+ */
+export type SubagentEventType = 'subagent_start' | 'subagent_event' | 'subagent_end';
+
+/**
+ * Base fields present in all subagent events.
+ */
+export interface SubagentEventBase {
+  /** Unique ID of the sub-agent instance */
+  subagentId: string;
+  /** Type/name of the sub-agent (e.g., "explorer", "planner") */
+  subagentType: string;
+  /** The parent tool call ID that spawned this sub-agent */
+  parentToolCallId: string;
+}
+
+/**
+ * Event emitted when a sub-agent starts execution.
+ */
+export interface SubagentStartEvent extends SubagentEventBase {
+  type: 'subagent_start';
+  /** The task/prompt given to the sub-agent */
+  prompt: string;
+  /** Start timestamp in milliseconds */
+  timestamp: number;
+}
+
+/**
+ * Event emitted for forwarded events from sub-agent execution.
+ */
+export interface SubagentInnerEvent extends SubagentEventBase {
+  type: 'subagent_event';
+  /** The actual event from the sub-agent */
+  innerEvent: AgentStreamEvent;
+}
+
+/**
+ * Event emitted when a sub-agent completes execution.
+ */
+export interface SubagentEndEvent extends SubagentEventBase {
+  type: 'subagent_end';
+  /** Whether the sub-agent completed successfully */
+  success: boolean;
+  /** Sub-agent's response text (if successful) */
+  result?: string;
+  /** Error message (if failed) */
+  error?: string;
+  /** End timestamp in milliseconds */
+  timestamp: number;
+  /** Tools used by the sub-agent */
+  toolExecutions?: Array<{
+    toolName: string;
+    arguments: Record<string, unknown>;
+    result: string;
+  }>;
+}
+
+/**
+ * Union type for all sub-agent events.
+ *
+ * @see UAP-1.0 Spec Section 8.7
+ */
+export type SubagentEvent = SubagentStartEvent | SubagentInnerEvent | SubagentEndEvent;
+
+/**
+ * Callback type for receiving sub-agent events.
+ * Tools that spawn sub-agents SHOULD accept this callback.
+ */
+export type OnSubagentEvent = (event: SubagentEvent) => void;

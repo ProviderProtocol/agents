@@ -1307,6 +1307,137 @@ toolCalls = [
 
 If the model does not specify dependencies, tools execute in parallel (default).
 
+### 8.7 Sub-Agent Event Propagation
+
+When sub-agents execute via streaming, their events SHOULD be propagated to the parent agent's stream. This enables observability into nested agent execution.
+
+**SubagentEvent Structure:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `subagentId` | String | Unique ID of the sub-agent instance |
+| `subagentType` | String | Type/name of the sub-agent (e.g., "explorer", "planner") |
+| `parentToolCallId` | String | The tool call ID that spawned this sub-agent |
+
+**Event Types:**
+
+Sub-agent events use the following `UAPEventType` values:
+
+| Type | Description |
+|------|-------------|
+| `subagent_start` | Sub-agent execution began |
+| `subagent_event` | Forwarded event from sub-agent (wraps inner event) |
+| `subagent_end` | Sub-agent execution completed |
+
+**Event Data Structures:**
+
+```pseudocode
+// subagent_start event data
+{
+  subagentId: String,
+  subagentType: String,
+  parentToolCallId: String,
+  prompt: String,           // The task given to the sub-agent
+  timestamp: Integer,       // Start time in milliseconds
+}
+
+// subagent_event event data (forwarded events)
+{
+  subagentId: String,
+  subagentType: String,
+  parentToolCallId: String,
+  innerEvent: AgentStreamEvent,  // The actual event from sub-agent
+}
+
+// subagent_end event data
+{
+  subagentId: String,
+  subagentType: String,
+  parentToolCallId: String,
+  success: Boolean,
+  result?: String,          // Sub-agent's response (if successful)
+  error?: String,           // Error message (if failed)
+  timestamp: Integer,       // End time in milliseconds
+  toolExecutions?: List<{   // Tools used by sub-agent
+    toolName: String,
+    arguments: Map,
+    result: String,
+  }>,
+}
+```
+
+**Implementation Pattern:**
+
+Tools that spawn sub-agents SHOULD accept an event callback and emit events during execution:
+
+```pseudocode
+interface SubagentToolOptions {
+  onSubagentEvent?: (event: SubagentEvent) -> void
+}
+
+explorerTool: Tool = {
+  name: "explore",
+  description: "...",
+  parameters: { ... },
+  run: async (params, context) => {
+    subagentId = generateId()
+
+    // Emit start event
+    context.onSubagentEvent?.({
+      type: "subagent_start",
+      subagentId,
+      subagentType: "explorer",
+      parentToolCallId: context.toolCallId,
+      prompt: params.query,
+      timestamp: Date.now(),
+    })
+
+    // Stream sub-agent execution
+    stream = explorer.stream(params.query, AgentState.initial())
+
+    for await (event of stream) {
+      // Forward inner events
+      context.onSubagentEvent?.({
+        type: "subagent_event",
+        subagentId,
+        subagentType: "explorer",
+        parentToolCallId: context.toolCallId,
+        innerEvent: event,
+      })
+    }
+
+    result = await stream.result
+
+    // Emit end event
+    context.onSubagentEvent?.({
+      type: "subagent_end",
+      subagentId,
+      subagentType: "explorer",
+      parentToolCallId: context.toolCallId,
+      success: true,
+      result: result.turn.response.text,
+      timestamp: Date.now(),
+      toolExecutions: result.turn.toolExecutions,
+    })
+
+    return result.turn.response.text
+  },
+}
+```
+
+**MUST Requirements:**
+
+1. Sub-agent events MUST include `subagentId` to correlate events
+2. Sub-agent events MUST include `parentToolCallId` to associate with parent tool call
+3. `subagent_start` MUST be emitted before sub-agent execution begins
+4. `subagent_end` MUST be emitted after sub-agent execution completes (success or failure)
+5. `subagent_event` SHOULD forward all significant inner events (tool executions, text deltas)
+
+**SHOULD Requirements:**
+
+1. Implementations SHOULD provide helper utilities for creating sub-agent tools with event propagation
+2. TUI/CLI implementations SHOULD display nested sub-agent events with visual indentation or hierarchy
+
 ---
 
 ## 9. Middleware
@@ -1540,6 +1671,9 @@ interface AgentStreamEvent {
 | `reasoning` | Reasoning output (ReAct) |
 | `action` | Action taken |
 | `observation` | Observation received |
+| `subagent_start` | Sub-agent execution began |
+| `subagent_event` | Forwarded event from sub-agent |
+| `subagent_end` | Sub-agent execution completed |
 
 ### 11.3 Streaming Usage
 

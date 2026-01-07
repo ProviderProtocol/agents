@@ -6,13 +6,16 @@ import importPlugin from 'eslint-plugin-import';
 export default [
   eslint.configs.recommended,
   {
-    files: ['src/**/*.ts', 'tests/**/*.ts'],
+    files: ['src/**/*.ts', 'tests/**/*.ts', 'examples/**/*.ts', 'examples/**/*.tsx'],
     languageOptions: {
       parser: tsparser,
       parserOptions: {
         project: './tsconfig.json',
         ecmaVersion: 'latest',
         sourceType: 'module',
+        ecmaFeatures: {
+          jsx: true,
+        },
       },
       globals: {
         console: 'readonly',
@@ -21,6 +24,9 @@ export default [
         clearTimeout: 'readonly',
         AbortSignal: 'readonly',
         AbortController: 'readonly',
+        React: 'readonly',
+        Bun: 'readonly',
+        Buffer: 'readonly',
       },
     },
     plugins: {
@@ -58,6 +64,9 @@ export default [
       'prefer-spread': 'error',
       'prefer-rest-params': 'error',
       'no-param-reassign': ['error', { props: false }],
+
+      // Allow ANSI escape codes in regex for terminal output
+      'no-control-regex': 'off',
     },
   },
   {

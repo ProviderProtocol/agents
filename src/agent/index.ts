@@ -366,4 +366,12 @@ export type {
   AgentStreamEvent,
   UAPEventType,
   AgentStrategy,
+  // Sub-agent event types (Section 8.7)
+  SubagentEventType,
+  SubagentEventBase,
+  SubagentStartEvent,
+  SubagentInnerEvent,
+  SubagentEndEvent,
+  SubagentEvent,
+  OnSubagentEvent,
 } from '../execution/types.ts';
