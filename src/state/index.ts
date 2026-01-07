@@ -5,7 +5,14 @@ import type {
   ToolCall,
   ToolResult,
 } from '@providerprotocol/ai';
-import { UserMessage, AssistantMessage, ToolResultMessage } from '@providerprotocol/ai';
+import {
+  UserMessage,
+  AssistantMessage,
+  ToolResultMessage,
+  isUserMessage,
+  isAssistantMessage,
+  isToolResultMessage,
+} from '@providerprotocol/ai';
 import { generateUUID } from '../utils/uuid.ts';
 import type {
   AgentStateInterface,
@@ -232,14 +239,14 @@ export class AgentState implements AgentStateInterface {
  * Serialize a UPP Message to JSON.
  */
 function serializeMessage(message: Message): MessageJSON {
-  if (message instanceof UserMessage) {
+  if (isUserMessage(message)) {
     return {
       role: 'user',
       content: message.content,
       metadata: message.metadata,
     };
   }
-  if (message instanceof AssistantMessage) {
+  if (isAssistantMessage(message)) {
     return {
       role: 'assistant',
       content: {
@@ -249,7 +256,7 @@ function serializeMessage(message: Message): MessageJSON {
       metadata: message.metadata,
     };
   }
-  if (message instanceof ToolResultMessage) {
+  if (isToolResultMessage(message)) {
     return {
       role: 'tool_result',
       content: message.results,
