@@ -1,6 +1,6 @@
 {
   "name": "@providerprotocol/agents",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "description": "Unified Agent Protocol (UAP) 1.0 implementation for @providerprotocol/ai",
   "type": "module",
   "exports": {
