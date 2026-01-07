@@ -1,14 +1,6 @@
 import type { Message } from '@providerprotocol/ai';
 import type { AgentState } from '../state/index.ts';
-import type { GenerateResult } from '../execution/types.ts';
-
-/**
- * Forward declaration of Agent for use in MiddlewareContext.
- */
-export interface AgentRef {
-  id: string;
-  system?: string;
-}
+import type { AgentRef, GenerateResult } from '../execution/types.ts';
 
 /**
  * Context passed to middleware functions.

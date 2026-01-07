@@ -92,8 +92,41 @@ export {
   isContextAwareTool,
   withToolContext,
 } from './execution/tool-context.ts';
-export type {
-  ToolExecutionContext,
-  ContextAwareToolRun,
-} from './execution/types.ts';
 export type { InjectToolContextOptions } from './execution/tool-context.ts';
+
+// Execution types (Section 8)
+export type {
+  AgentRef,
+  ContextAwareToolRun,
+  ExecutionContext,
+  ExecutionPlan,
+  ExecutionResult,
+  ExecutionStrategy,
+  LoopOptions,
+  OrderedToolCall,
+  PlanOptions,
+  ReactOptions,
+  ToolDependencyOptions,
+  ToolExecutionContext,
+  ToolWithDependencies,
+} from './execution/types.ts';
+
+// Middleware types (Section 9)
+export type {
+  LoggingOptions,
+  Middleware,
+  MiddlewareContext,
+} from './middleware/types.ts';
+
+// Tool ordering (Sections 8.5-8.6)
+export {
+  executeOrderedToolCalls,
+  hasCallDependencies,
+  hasToolDependencies,
+  orderToolCalls,
+} from './execution/tool-ordering.ts';
+export type {
+  ExecutionGroup,
+  ToolExecutionResult,
+  ToolExecutor,
+} from './execution/tool-ordering.ts';
