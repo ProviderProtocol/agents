@@ -52,7 +52,9 @@
     "test:live": "bun test tests/live",
     "lint": "eslint src tests examples --ext .ts,.tsx",
     "typecheck": "tsc --noEmit",
-    "docgen": "typedoc --entryPoints src/index.ts --entryPoints src/execution/index.ts --entryPoints src/middleware/index.ts --entryPoints src/thread-tree/index.ts --entryPoints src/checkpoint/index.ts --out docs --plugin typedoc-plugin-markdown"
+    "docgen": "typedoc --entryPoints src/index.ts --entryPoints src/execution/index.ts --entryPoints src/middleware/index.ts --entryPoints src/thread-tree/index.ts --entryPoints src/checkpoint/index.ts --out docs --plugin typedoc-plugin-markdown",
+    "docs:sort": "bun run scripts/sort-docs.ts",
+    "docs": "bun run docgen && bun run docs:sort"
   },
   "peerDependencies": {
     "@providerprotocol/ai": ">=0.0.11"
