@@ -7,6 +7,26 @@
     "name": "Provider Protocol"
   },
   "license": "MIT",
+  "keywords": [
+    "ai",
+    "agent",
+    "agents",
+    "llm",
+    "unified-agent-protocol",
+    "uap",
+    "anthropic",
+    "openai",
+    "google",
+    "gemini",
+    "ollama",
+    "multi-provider",
+    "tool-calling",
+    "agentic",
+    "middleware",
+    "thread",
+    "checkpoint",
+    "ai-sdk"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/providerprotocol/agents"
