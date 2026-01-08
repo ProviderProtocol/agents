@@ -51,7 +51,8 @@
     "test:unit": "bun test tests/unit",
     "test:live": "bun test tests/live",
     "lint": "eslint src tests examples --ext .ts,.tsx",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "docgen": "typedoc --entryPoints src/index.ts --entryPoints src/execution/index.ts --entryPoints src/middleware/index.ts --entryPoints src/thread-tree/index.ts --entryPoints src/checkpoint/index.ts --out docs --plugin typedoc-plugin-markdown"
   },
   "peerDependencies": {
     "@providerprotocol/ai": ">=0.0.11"
@@ -64,6 +65,8 @@
     "eslint": "^9.39.2",
     "eslint-plugin-import": "^2.32.0",
     "tsup": "^8.5.1",
+    "typedoc": "^0.28.15",
+    "typedoc-plugin-markdown": "^4.9.0",
     "typescript": "^5.9.3"
   }
 }

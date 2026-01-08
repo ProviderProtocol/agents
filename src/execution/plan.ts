@@ -11,6 +11,10 @@ import type {
   AgentStreamEvent,
 } from './types.ts';
 
+/**
+ * Default configuration for the plan strategy.
+ * @internal
+ */
 const DEFAULT_PLAN_OPTIONS: Required<PlanOptions> = {
   maxPlanSteps: Infinity,
   allowReplan: true,
@@ -39,21 +43,61 @@ const DEFAULT_PLAN_OPTIONS: Required<PlanOptions> = {
   },
 };
 
+/**
+ * System prompt used to request plan generation from the LLM.
+ * @internal
+ */
 const PLAN_PROMPT = `Create a detailed execution plan to accomplish the task.
 Break it down into clear steps, specifying which tool to use for each step if applicable.
 Include dependencies between steps (which steps must complete before others can start).
 Return your plan as a JSON object with a "steps" array.`;
 
 /**
- * Create a plan-then-execute strategy.
+ * Creates a plan-then-execute strategy for agent execution.
  *
- * Behavior:
- * 1. Plan: LLM generates structured plan with steps and dependencies
- * 2. Execute: Execute each plan step respecting dependency order
- * 3. Replan: If a step fails and allowReplan is true, generate new plan
+ * The plan strategy implements a two-phase approach:
+ * 1. **Planning Phase**: LLM generates a structured plan with steps and dependencies
+ * 2. **Execution Phase**: Execute each plan step in topological order respecting dependencies
  *
- * @param options - Plan configuration options
- * @returns ExecutionStrategy
+ * If a step fails and `allowReplan` is true, the strategy can generate a new plan
+ * to recover from the failure (replanning is not yet fully implemented).
+ *
+ * This strategy is ideal for complex multi-step tasks where the execution order
+ * matters and steps may have dependencies on each other.
+ *
+ * @param options - Configuration options for the plan strategy
+ * @returns An ExecutionStrategy instance implementing the plan-then-execute pattern
+ *
+ * @example
+ * ```typescript
+ * import { createAgent, plan } from '@providerprotocol/agents';
+ *
+ * // Basic plan-based agent
+ * const agent = createAgent({
+ *   llm: myLLM,
+ *   tools: [readFileTool, writeFileTool, searchTool],
+ *   strategy: plan(),
+ * });
+ *
+ * // With step limit and replanning
+ * const robustAgent = createAgent({
+ *   llm: myLLM,
+ *   tools: [apiTool, dbTool],
+ *   strategy: plan({
+ *     maxPlanSteps: 10,
+ *     allowReplan: true,
+ *   }),
+ * });
+ *
+ * // Execute a complex task
+ * const result = await agent.generate(
+ *   'Read config.json, update the version, and write it back'
+ * );
+ * console.log(result.state.plan); // Shows executed plan steps
+ * ```
+ *
+ * @see {@link loop} for simpler tool-loop execution
+ * @see {@link react} for reasoning-enhanced execution
  */
 export function plan(options: PlanOptions = {}): ExecutionStrategy {
   const opts = { ...DEFAULT_PLAN_OPTIONS, ...options };
@@ -61,21 +105,31 @@ export function plan(options: PlanOptions = {}): ExecutionStrategy {
   return {
     name: 'plan',
 
+    /**
+     * Executes the plan strategy synchronously (non-streaming).
+     *
+     * First generates a structured plan from the LLM, then executes each
+     * step in topological order (respecting dependencies). Steps are
+     * executed sequentially, with each step's status tracked in state.
+     *
+     * @param context - The execution context containing LLM, state, tools, etc.
+     * @returns Promise resolving to the execution result with final turn and state
+     * @throws {Error} When execution is aborted via signal
+     * @throws {Error} When plan cannot be parsed from LLM response
+     * @throws {Error} When a plan step fails (unless allowReplan handles it)
+     */
     async execute(context: ExecutionContext): Promise<ExecutionResult> {
       const { llm, input, state, strategy, signal } = context;
 
-      // Add input message to state and set agentId in metadata
-      // This ensures checkpoints include the full conversation
       let currentState = state
         .withMessage(input)
         .withMetadata('agentId', context.agent.id);
       let step = 0;
       let finalTurn: Turn | undefined;
 
-      // Messages for LLM generation (includes input we just added)
       const messages = [...currentState.messages];
 
-      // PLANNING PHASE
+      // PLANNING PHASE: Generate structured plan
       step++;
       currentState = currentState.withStep(step);
 
@@ -85,7 +139,6 @@ export function plan(options: PlanOptions = {}): ExecutionStrategy {
 
       strategy.onStepStart?.(step, currentState);
 
-      // Generate the plan
       const planMessages = [
         ...messages,
         new UserMessage(PLAN_PROMPT),
@@ -100,7 +153,6 @@ export function plan(options: PlanOptions = {}): ExecutionStrategy {
         if (planTurn.data) {
           planData = planTurn.data as typeof planData;
         } else {
-          // Try to parse from text
           const jsonMatch = planTurn.response.text.match(/\{[\s\S]*\}/);
           if (jsonMatch) {
             planData = JSON.parse(jsonMatch[0]) as typeof planData;
@@ -112,7 +164,7 @@ export function plan(options: PlanOptions = {}): ExecutionStrategy {
         throw new Error(`Failed to parse execution plan: ${err instanceof Error ? err.message : String(err)}`);
       }
 
-      // Convert to PlanStep format
+      // Convert to PlanStep format and apply limits
       let planSteps: PlanStep[] = planData.steps.map((s) => ({
         id: s.id || generateUUID(),
         description: s.description,
@@ -121,7 +173,6 @@ export function plan(options: PlanOptions = {}): ExecutionStrategy {
         status: 'pending' as const,
       }));
 
-      // Apply maxPlanSteps limit
       if (opts.maxPlanSteps !== Infinity && planSteps.length > opts.maxPlanSteps) {
         planSteps = planSteps.slice(0, opts.maxPlanSteps);
       }
@@ -131,10 +182,9 @@ export function plan(options: PlanOptions = {}): ExecutionStrategy {
 
       strategy.onStepEnd?.(step, { turn: planTurn, state: currentState });
 
-      // EXECUTION PHASE
+      // EXECUTION PHASE: Execute steps in topological order
       const completedSteps = new Set<string>();
 
-      // Execute steps in topological order
       while (planSteps.some((s) => s.status === 'pending')) {
         // Find next executable step (all dependencies completed)
         const nextStep = planSteps.find(
@@ -192,14 +242,12 @@ export function plan(options: PlanOptions = {}): ExecutionStrategy {
           currentState = currentState.withPlan([...planSteps]);
 
           if (opts.allowReplan) {
-            // Could implement replanning here
-            // For now, just continue and let the error propagate
+            // Replanning could be implemented here
           }
 
           throw err;
         }
 
-        // Check stop condition
         const shouldStop = await strategy.stopCondition?.(currentState);
         if (shouldStop) {
           break;
@@ -207,10 +255,9 @@ export function plan(options: PlanOptions = {}): ExecutionStrategy {
       }
 
       if (!finalTurn) {
-        finalTurn = planTurn; // Use plan turn if no execution happened
+        finalTurn = planTurn;
       }
 
-      // Include sessionId in state metadata if checkpointing is enabled
       let finalState = currentState;
       if (context.sessionId) {
         finalState = currentState.withMetadata('sessionId', context.sessionId);
@@ -226,6 +273,37 @@ export function plan(options: PlanOptions = {}): ExecutionStrategy {
       return result;
     },
 
+    /**
+     * Executes the plan strategy with streaming support.
+     *
+     * Streams both the planning and execution phases, emitting UAP-level
+     * events (plan_created, plan_step_start, plan_step_end, action, observation)
+     * and UPP-level events (text_delta, etc.) as execution progresses.
+     *
+     * @param context - The execution context containing LLM, state, tools, etc.
+     * @returns AgentStreamResult for async iteration over events and final result
+     *
+     * @example
+     * ```typescript
+     * const stream = agent.stream('Organize the project files');
+     *
+     * for await (const event of stream) {
+     *   if (event.source === 'uap') {
+     *     if (event.uap?.type === 'plan_created') {
+     *       console.log('Plan:', event.uap.data.plan);
+     *     } else if (event.uap?.type === 'plan_step_start') {
+     *       console.log('Starting step:', event.uap.data.planStep);
+     *     }
+     *   }
+     *   if (event.source === 'upp' && event.upp?.type === 'text_delta') {
+     *     process.stdout.write(event.upp.delta.text ?? '');
+     *   }
+     * }
+     *
+     * const result = await stream.result;
+     * console.log('Final plan:', result.state.plan);
+     * ```
+     */
     stream(context: ExecutionContext): AgentStreamResult {
       const { llm, input, state, strategy, signal } = context;
       const agentId = context.agent.id;
@@ -245,16 +323,17 @@ export function plan(options: PlanOptions = {}): ExecutionStrategy {
         rejectResult = reject;
       });
 
+      /**
+       * Async generator that yields stream events during plan execution.
+       * @internal
+       */
       async function* generateEvents(): AsyncGenerator<AgentStreamEvent> {
-        // Add input message to state and set agentId in metadata
-        // This ensures checkpoints include the full conversation
         let currentState = state
           .withMessage(input)
           .withMetadata('agentId', context.agent.id);
         let step = 0;
         let finalTurn: Turn | undefined;
 
-        // Messages for LLM generation (includes input we just added)
         const messages = [...currentState.messages];
 
         try {
@@ -459,7 +538,6 @@ export function plan(options: PlanOptions = {}): ExecutionStrategy {
             finalTurn = planTurn;
           }
 
-          // Include sessionId in state metadata if checkpointing is enabled
           let finalState = currentState;
           if (context.sessionId) {
             finalState = currentState.withMetadata('sessionId', context.sessionId);

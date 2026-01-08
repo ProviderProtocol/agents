@@ -9,22 +9,71 @@ import type {
   AgentStreamEvent,
 } from './types.ts';
 
+/**
+ * Default configuration for the ReAct strategy.
+ * @internal
+ */
 const DEFAULT_REACT_OPTIONS: Required<ReactOptions> = {
   maxSteps: Infinity,
   reasoningPrompt: 'Think step by step about what you need to do next. Consider the current state, what tools are available, and what action would be most helpful.',
 };
 
 /**
- * Create a ReAct (Reason-Act-Observe) execution strategy.
+ * Creates a ReAct (Reason-Act-Observe) execution strategy for agent execution.
  *
- * Behavior:
- * 1. Reason: LLM outputs reasoning about what to do next
- * 2. Act: LLM selects and executes tool(s)
- * 3. Observe: Tool results are formatted as observations
- * 4. Repeat until stop condition, no more actions, or maxSteps
+ * The ReAct strategy implements the Reason-Act-Observe pattern from the paper
+ * "ReAct: Synergizing Reasoning and Acting in Language Models". It adds an
+ * explicit reasoning phase before each action, which improves the model's
+ * decision-making by encouraging step-by-step thinking.
  *
- * @param options - ReAct configuration options
- * @returns ExecutionStrategy
+ * The execution cycle is:
+ * 1. **Reason**: LLM outputs reasoning about what to do next
+ * 2. **Act**: LLM selects and executes tool(s) based on reasoning
+ * 3. **Observe**: Tool results are formatted as observations
+ * 4. **Repeat**: Continue until stop condition, no more actions, or maxSteps
+ *
+ * This strategy is ideal for complex tasks requiring careful deliberation
+ * and multi-step reasoning.
+ *
+ * @param options - Configuration options for the ReAct strategy
+ * @returns An ExecutionStrategy instance implementing the ReAct pattern
+ *
+ * @example
+ * ```typescript
+ * import { createAgent, react } from '@providerprotocol/agents';
+ *
+ * // Basic ReAct agent
+ * const agent = createAgent({
+ *   llm: myLLM,
+ *   tools: [searchTool, calculatorTool],
+ *   strategy: react(),
+ * });
+ *
+ * // With custom reasoning prompt and step limit
+ * const customAgent = createAgent({
+ *   llm: myLLM,
+ *   tools: [searchTool],
+ *   strategy: react({
+ *     maxSteps: 10,
+ *     reasoningPrompt: 'Analyze the situation and determine the best action.',
+ *   }),
+ * });
+ *
+ * // With lifecycle hooks for observability
+ * const observableAgent = createAgent({
+ *   llm: myLLM,
+ *   tools: [searchTool],
+ *   strategy: react({ maxSteps: 5 }),
+ *   hooks: {
+ *     onReason: (step, reasoning) => console.log(`Step ${step} reasoning:`, reasoning),
+ *     onAct: (step, actions) => console.log(`Step ${step} actions:`, actions),
+ *   },
+ * });
+ * ```
+ *
+ * @see https://arxiv.org/abs/2210.03629 - ReAct: Synergizing Reasoning and Acting
+ * @see {@link loop} for simpler tool-loop execution
+ * @see {@link plan} for structured multi-step execution
  */
 export function react(options: ReactOptions = {}): ExecutionStrategy {
   const opts = { ...DEFAULT_REACT_OPTIONS, ...options };
@@ -32,18 +81,27 @@ export function react(options: ReactOptions = {}): ExecutionStrategy {
   return {
     name: 'react',
 
+    /**
+     * Executes the ReAct strategy synchronously (non-streaming).
+     *
+     * Alternates between reasoning and action phases, with the model
+     * first thinking about what to do, then taking action. Tool results
+     * become observations for the next reasoning phase.
+     *
+     * @param context - The execution context containing LLM, state, tools, etc.
+     * @returns Promise resolving to the execution result with final turn and state
+     * @throws {Error} When execution is aborted via signal
+     * @throws {Error} When no turn is generated
+     */
     async execute(context: ExecutionContext): Promise<ExecutionResult> {
       const { llm, input, state, strategy, signal } = context;
 
-      // Add input message to state and set agentId in metadata
-      // This ensures checkpoints include the full conversation
       let currentState = state
         .withMessage(input)
         .withMetadata('agentId', context.agent.id);
       let step = 0;
       let finalTurn: Turn | undefined;
 
-      // Messages for LLM generation (includes input we just added)
       const messages = [...currentState.messages];
 
       while (true) {
@@ -68,7 +126,6 @@ export function react(options: ReactOptions = {}): ExecutionStrategy {
         currentState = currentState.withReasoning(reasoning);
         strategy.onReason?.(step, reasoning);
 
-        // Add reasoning to conversation
         messages.push(...reasoningTurn.messages);
 
         // ACT PHASE: Execute with tools
@@ -80,11 +137,9 @@ export function react(options: ReactOptions = {}): ExecutionStrategy {
         const actionTurn = await llm.generate(messages);
         finalTurn = actionTurn;
 
-        // Update messages with action response
         messages.push(...actionTurn.messages);
         currentState = currentState.withMessages(actionTurn.messages);
 
-        // Handle tool calls
         if (actionTurn.response.hasToolCalls) {
           strategy.onAct?.(step, actionTurn.response.toolCalls ?? []);
         }
@@ -96,18 +151,15 @@ export function react(options: ReactOptions = {}): ExecutionStrategy {
 
         strategy.onStepEnd?.(step, { turn: actionTurn, state: currentState });
 
-        // Check stop conditions
         const shouldStop = await strategy.stopCondition?.(currentState);
         if (shouldStop) {
           break;
         }
 
-        // No more tool calls means we're done
         if (!actionTurn.response.hasToolCalls) {
           break;
         }
 
-        // Check step limit
         if (opts.maxSteps !== Infinity && step >= opts.maxSteps) {
           break;
         }
@@ -117,7 +169,6 @@ export function react(options: ReactOptions = {}): ExecutionStrategy {
         throw new Error('No turn generated');
       }
 
-      // Include sessionId in state metadata if checkpointing is enabled
       let finalState = currentState;
       if (context.sessionId) {
         finalState = currentState.withMetadata('sessionId', context.sessionId);
@@ -133,6 +184,32 @@ export function react(options: ReactOptions = {}): ExecutionStrategy {
       return result;
     },
 
+    /**
+     * Executes the ReAct strategy with streaming support.
+     *
+     * Streams both the reasoning and action phases, emitting UAP-level
+     * events (step_start, reasoning, action, observation, step_end) and
+     * UPP-level events (text_delta, etc.) as execution progresses.
+     *
+     * @param context - The execution context containing LLM, state, tools, etc.
+     * @returns AgentStreamResult for async iteration over events and final result
+     *
+     * @example
+     * ```typescript
+     * const stream = agent.stream('Research quantum computing');
+     *
+     * for await (const event of stream) {
+     *   if (event.source === 'uap' && event.uap?.type === 'reasoning') {
+     *     console.log('Reasoning:', event.uap.data.reasoning);
+     *   }
+     *   if (event.source === 'upp' && event.upp?.type === 'text_delta') {
+     *     process.stdout.write(event.upp.delta.text ?? '');
+     *   }
+     * }
+     *
+     * const result = await stream.result;
+     * ```
+     */
     stream(context: ExecutionContext): AgentStreamResult {
       const { llm, input, state, strategy, signal } = context;
       const agentId = context.agent.id;
@@ -152,16 +229,17 @@ export function react(options: ReactOptions = {}): ExecutionStrategy {
         rejectResult = reject;
       });
 
+      /**
+       * Async generator that yields stream events during ReAct execution.
+       * @internal
+       */
       async function* generateEvents(): AsyncGenerator<AgentStreamEvent> {
-        // Add input message to state and set agentId in metadata
-        // This ensures checkpoints include the full conversation
         let currentState = state
           .withMessage(input)
           .withMetadata('agentId', context.agent.id);
         let step = 0;
         let finalTurn: Turn | undefined;
 
-        // Messages for LLM generation (includes input we just added)
         const messages = [...currentState.messages];
 
         try {
@@ -185,7 +263,7 @@ export function react(options: ReactOptions = {}): ExecutionStrategy {
               },
             };
 
-            // REASON PHASE
+            // REASON PHASE - Stream the reasoning
             const reasoningMessages = [
               ...messages,
               new UserMessage(opts.reasoningPrompt),
@@ -222,7 +300,7 @@ export function react(options: ReactOptions = {}): ExecutionStrategy {
 
             messages.push(...reasoningTurn.messages);
 
-            // ACT PHASE
+            // ACT PHASE - Stream the action
             const actionPrompt = new UserMessage(
               'Based on your reasoning, take the appropriate action. Use tools if needed, or provide a final answer.',
             );
@@ -302,7 +380,6 @@ export function react(options: ReactOptions = {}): ExecutionStrategy {
             throw new Error('No turn generated');
           }
 
-          // Include sessionId in state metadata if checkpointing is enabled
           let finalState = currentState;
           if (context.sessionId) {
             finalState = currentState.withMetadata('sessionId', context.sessionId);

@@ -1,6 +1,11 @@
 import type { Middleware, LoggingOptions, MiddlewareContext } from './types.ts';
 import type { GenerateResult } from '../execution/types.ts';
 
+/**
+ * Default configuration values for the logging middleware.
+ *
+ * @internal
+ */
 const DEFAULT_LOGGING_OPTIONS: Required<LoggingOptions> = {
   level: 'info',
   logger: console.log,
@@ -8,6 +13,14 @@ const DEFAULT_LOGGING_OPTIONS: Required<LoggingOptions> = {
   includeTiming: true,
 };
 
+/**
+ * Numeric priority values for log levels, used for filtering.
+ *
+ * Lower numbers are more verbose. A log message is shown only
+ * if its level value is >= the configured minimum level value.
+ *
+ * @internal
+ */
 const LOG_LEVELS = {
   debug: 0,
   info: 1,
@@ -16,25 +29,87 @@ const LOG_LEVELS = {
 } as const;
 
 /**
- * Create a logging middleware.
+ * Creates a logging middleware that records agent execution activity.
  *
- * Logs agent execution with configurable detail level:
- * - Execution start/end
- * - Timing information (if enabled)
- * - Message content (if enabled)
- * - Errors
+ * This middleware provides comprehensive logging for agent operations including:
+ * - Execution start with agent identification
+ * - Execution completion with optional timing and token usage
+ * - Error conditions with contextual information
+ * - Optional detailed message content (debug level)
  *
- * @param options - Logging configuration options
- * @returns Middleware
+ * @param options - Configuration options for logging behavior
+ * @returns A configured {@link Middleware} instance
+ *
+ * @example
+ * Basic usage with default options:
+ * ```typescript
+ * import { createAgent } from '@providerprotocol/agents';
+ * import { logging } from '@providerprotocol/agents/middleware';
+ *
+ * const agent = createAgent({
+ *   model: anthropic('claude-sonnet-4-20250514'),
+ *   middleware: [logging()],
+ * });
+ * ```
+ *
+ * @example
+ * Debug logging with message content:
+ * ```typescript
+ * const agent = createAgent({
+ *   model: anthropic('claude-sonnet-4-20250514'),
+ *   middleware: [
+ *     logging({
+ *       level: 'debug',
+ *       includeMessages: true,
+ *       includeTiming: true,
+ *     }),
+ *   ],
+ * });
+ * ```
+ *
+ * @example
+ * Custom logger integration:
+ * ```typescript
+ * import pino from 'pino';
+ *
+ * const pinoLogger = pino();
+ *
+ * const agent = createAgent({
+ *   model: anthropic('claude-sonnet-4-20250514'),
+ *   middleware: [
+ *     logging({
+ *       level: 'info',
+ *       logger: (msg) => pinoLogger.info(msg),
+ *     }),
+ *   ],
+ * });
+ * ```
+ *
+ * @see {@link LoggingOptions} for available configuration options
+ * @see {@link Middleware} for the middleware interface
  */
 export function logging(options: LoggingOptions = {}): Middleware {
   const opts = { ...DEFAULT_LOGGING_OPTIONS, ...options };
   const currentLevel = LOG_LEVELS[opts.level];
 
+  /**
+   * Determines if a message at the given level should be logged.
+   *
+   * @param level - The log level of the message to check
+   * @returns true if the message should be logged, false otherwise
+   */
   function shouldLog(level: keyof typeof LOG_LEVELS): boolean {
     return LOG_LEVELS[level] >= currentLevel;
   }
 
+  /**
+   * Outputs a log message if it meets the minimum level threshold.
+   *
+   * Messages are prefixed with `[UAP:LEVEL]` for easy filtering.
+   *
+   * @param level - The severity level of the message
+   * @param message - The message content to log
+   */
   function log(level: keyof typeof LOG_LEVELS, message: string): void {
     if (shouldLog(level)) {
       const prefix = `[UAP:${level.toUpperCase()}]`;
@@ -42,6 +117,14 @@ export function logging(options: LoggingOptions = {}): Middleware {
     }
   }
 
+  /**
+   * Formats execution context into a human-readable string.
+   *
+   * Produces output like: `agent=my-agent messages=5`
+   *
+   * @param context - The middleware execution context
+   * @returns Formatted context string for logging
+   */
   function formatContext(context: MiddlewareContext): string {
     const parts = [`agent=${context.agent.id}`];
 
@@ -116,7 +199,7 @@ export function logging(options: LoggingOptions = {}): Middleware {
 
       log('error', message);
 
-      // Let the error propagate
+      // Allow error to propagate to the next middleware or caller
       return undefined;
     },
   };

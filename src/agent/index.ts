@@ -1,3 +1,13 @@
+/**
+ * Agent module for the Unified Agent Protocol (UAP).
+ *
+ * This module provides the core `agent()` factory function for creating
+ * AI agent instances that combine LLM capabilities with state management,
+ * middleware pipelines, and execution strategies.
+ *
+ * @packageDocumentation
+ */
+
 import {
   llm,
   UserMessage,
@@ -20,36 +30,67 @@ import type { Middleware, MiddlewareContext } from '../middleware/types.ts';
 import type { Agent, AgentOptions } from './types.ts';
 
 /**
- * Create an agent instance.
+ * Creates a new agent instance with the specified configuration.
  *
- * @param options - Agent configuration
- * @returns Agent instance
+ * The agent factory function is the primary entry point for creating AI agents
+ * in the Unified Agent Protocol (UAP). It combines an LLM from `@providerprotocol/ai`
+ * with UAP-specific features like state management, middleware, and execution strategies.
+ *
+ * @param options - Agent configuration options including model, tools, system prompt,
+ *                  execution strategy, middleware, and checkpointing configuration
+ * @returns A configured Agent instance ready for execution
+ *
+ * @remarks
+ * The agent function performs the following setup:
+ * 1. Generates a unique agent ID (UUIDv4)
+ * 2. Optionally generates a session ID for checkpointing
+ * 3. Creates the underlying LLM instance with full UPP passthrough
+ * 4. Configures the middleware pipeline
+ * 5. Sets up the execution strategy (defaults to `loop()`)
  *
  * @example
+ * Basic agent creation:
  * ```typescript
  * import { agent, AgentState } from '@providerprotocol/agents';
  * import { anthropic } from '@providerprotocol/ai/anthropic';
+ *
+ * const myAgent = agent({
+ *   model: anthropic('claude-sonnet-4-20250514'),
+ *   system: 'You are a helpful assistant.',
+ * });
+ *
+ * const state = AgentState.initial();
+ * const { turn, state: newState } = await myAgent.generate('Hello', state);
+ * ```
+ *
+ * @example
+ * Agent with tools and middleware:
+ * ```typescript
+ * import { agent } from '@providerprotocol/agents';
+ * import { anthropic } from '@providerprotocol/ai/anthropic';
+ * import { loop } from '@providerprotocol/agents/execution';
+ * import { withContext } from '@providerprotocol/agents/middleware';
  *
  * const coder = agent({
  *   model: anthropic('claude-sonnet-4-20250514'),
  *   tools: [Bash, Read, Write],
  *   system: 'You are a coding assistant.',
+ *   execution: loop({ maxIterations: 20 }),
+ *   middleware: [withContext({ maxTokens: 100000 })],
  * });
- *
- * const state = AgentState.initial();
- * const { turn, state: newState } = await coder.generate('Hello', state);
  * ```
+ *
+ * @see {@link Agent} for the returned interface
+ * @see {@link AgentOptions} for all configuration options
  */
 export function agent(options: AgentOptions): Agent {
   const {
-    // UAP-specific options
     execution = loop(),
     middleware = [],
     strategy = {},
     checkpoints,
     sessionId: providedSessionId,
     _llmInstance,
-    // LLM options (passthrough to UPP)
     model,
     params = {},
     config,
@@ -60,11 +101,12 @@ export function agent(options: AgentOptions): Agent {
   } = options;
 
   const agentId = generateUUID();
-  // Generate sessionId (UUIDv4) if checkpoints provided but no sessionId
-  // Per UAP spec Section 3.4: Session IDs MUST be UUIDv4
+
+  // Per UAP-1.0 Section 3.4: Session IDs MUST be UUIDv4.
+  // Auto-generate when checkpoints are provided but no sessionId is specified.
   const sessionId = checkpoints ? (providedSessionId ?? generateUUID()) : providedSessionId;
 
-  // Create the LLM instance with full UPP passthrough (or use injected instance for testing)
+  // Create the LLM instance with full UPP passthrough, or use injected instance for testing
   const llmInstance: LLMInstance = _llmInstance ?? llm({
     model,
     params,
@@ -76,7 +118,10 @@ export function agent(options: AgentOptions): Agent {
   });
 
   /**
-   * Normalize input to a Message.
+   * Normalizes user input to a Message object.
+   *
+   * @param input - String or Message input from the user
+   * @returns A Message object (UserMessage if input was a string)
    */
   function normalizeInput(input: string | Message): Message {
     if (typeof input === 'string') {
@@ -86,7 +131,14 @@ export function agent(options: AgentOptions): Agent {
   }
 
   /**
-   * Run middleware before hooks.
+   * Executes middleware `before` hooks in pipeline order.
+   *
+   * Each middleware can modify the context before execution proceeds.
+   * Middlewares are run sequentially in the order they were registered.
+   *
+   * @param middlewares - Array of middleware instances
+   * @param context - Initial middleware context
+   * @returns The potentially modified context after all before hooks
    */
   async function runBeforeMiddleware(
     middlewares: Middleware[],
@@ -107,7 +159,16 @@ export function agent(options: AgentOptions): Agent {
   }
 
   /**
-   * Run middleware after hooks (in reverse order).
+   * Executes middleware `after` hooks in reverse pipeline order.
+   *
+   * Each middleware can modify the result after execution completes.
+   * Middlewares are run in reverse order (last registered runs first)
+   * to maintain symmetric wrapping behavior.
+   *
+   * @param middlewares - Array of middleware instances
+   * @param context - The middleware context from execution
+   * @param result - The generation result to potentially modify
+   * @returns The potentially modified result after all after hooks
    */
   async function runAfterMiddleware(
     middlewares: Middleware[],
@@ -116,7 +177,6 @@ export function agent(options: AgentOptions): Agent {
   ): Promise<GenerateResult> {
     let currentResult = result;
 
-    // Run in reverse order
     for (let i = middlewares.length - 1; i >= 0; i--) {
       const mw = middlewares[i];
       if (mw?.after) {
@@ -128,14 +188,22 @@ export function agent(options: AgentOptions): Agent {
   }
 
   /**
-   * Run middleware error hooks (in reverse order).
+   * Executes middleware `onError` hooks in reverse pipeline order.
+   *
+   * Attempts error recovery by allowing middleware to handle errors.
+   * The first middleware that returns a result "catches" the error.
+   * If no middleware handles the error, returns undefined.
+   *
+   * @param middlewares - Array of middleware instances
+   * @param context - The middleware context from execution
+   * @param error - The error that occurred during execution
+   * @returns A recovered result if any middleware handled the error, otherwise undefined
    */
   async function runErrorMiddleware(
     middlewares: Middleware[],
     context: MiddlewareContext,
     error: Error,
   ): Promise<GenerateResult | undefined> {
-    // Run in reverse order
     for (let i = middlewares.length - 1; i >= 0; i--) {
       const mw = middlewares[i];
       if (mw?.onError) {
@@ -150,7 +218,13 @@ export function agent(options: AgentOptions): Agent {
   }
 
   /**
-   * Build execution context.
+   * Constructs the execution context for the execution strategy.
+   *
+   * @param input - Normalized user message
+   * @param state - Current agent state
+   * @param resolvedStrategy - Agent strategy hooks
+   * @param signal - Optional AbortSignal for cancellation
+   * @returns ExecutionContext ready for the execution strategy
    */
   function buildExecutionContext(
     input: Message,
@@ -183,7 +257,6 @@ export function agent(options: AgentOptions): Agent {
     ): Promise<GenerateResult> {
       const normalizedInput = normalizeInput(input);
 
-      // Create middleware context
       const middlewareContext: MiddlewareContext = {
         agent: { id: agentId, system },
         input: normalizedInput,
@@ -192,20 +265,16 @@ export function agent(options: AgentOptions): Agent {
       };
 
       try {
-        // Run before middleware
         const processedContext = await runBeforeMiddleware(middleware, middlewareContext);
 
-        // Build execution context
         const executionContext = buildExecutionContext(
           processedContext.input,
           processedContext.state,
           strategy,
         );
 
-        // Execute strategy
         const result = await execution.execute(executionContext);
 
-        // Run after middleware
         const finalResult = await runAfterMiddleware(
           middleware,
           processedContext,
@@ -216,7 +285,6 @@ export function agent(options: AgentOptions): Agent {
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
 
-        // Try to recover with error middleware
         const recovered = await runErrorMiddleware(middleware, middlewareContext, err);
         if (recovered) {
           return recovered;
@@ -232,7 +300,6 @@ export function agent(options: AgentOptions): Agent {
     ): AgentStreamResult {
       const normalizedInput = normalizeInput(input);
 
-      // Create middleware context
       const middlewareContext: MiddlewareContext = {
         agent: { id: agentId, system },
         input: normalizedInput,
@@ -240,8 +307,8 @@ export function agent(options: AgentOptions): Agent {
         metadata: new Map(),
       };
 
-      // We need to run before middleware synchronously enough to get the context
-      // but streaming is inherently async. We'll handle this by wrapping the stream.
+      // Streaming requires wrapping the async generator to handle middleware
+      // while still returning a synchronous AgentStreamResult
       let aborted = false;
       const abortController = new AbortController();
 
@@ -255,10 +322,8 @@ export function agent(options: AgentOptions): Agent {
 
       const createStream = async function* () {
         try {
-          // Run before middleware
           const processedContext = await runBeforeMiddleware(middleware, middlewareContext);
 
-          // Build execution context
           const executionContext = buildExecutionContext(
             processedContext.input,
             processedContext.state,
@@ -266,10 +331,8 @@ export function agent(options: AgentOptions): Agent {
             abortController.signal,
           );
 
-          // Get the stream from the execution strategy
           const streamResult = execution.stream(executionContext);
 
-          // Yield events from the stream
           for await (const event of streamResult) {
             if (aborted) {
               break;
@@ -277,10 +340,8 @@ export function agent(options: AgentOptions): Agent {
             yield event;
           }
 
-          // Get the final result
           const result = await streamResult.result;
 
-          // Run after middleware
           const finalResult = await runAfterMiddleware(
             middleware,
             processedContext,
@@ -291,7 +352,6 @@ export function agent(options: AgentOptions): Agent {
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
 
-          // Try to recover with error middleware
           const recovered = await runErrorMiddleware(middleware, middlewareContext, err);
           if (recovered) {
             resolveResult(recovered);
@@ -321,13 +381,9 @@ export function agent(options: AgentOptions): Agent {
       input: string | Message,
       state: AgentState,
     ): Promise<GenerateResult> {
-      // Per UAP-1.0 Section 4.6: ask() is a convenience method for multi-turn execution.
-      // The execution strategy handles adding input to state and appending response.
-      // We delegate directly to generate() to:
-      // 1. Preserve middleware before() modifications (e.g., context pruning via withContext)
-      // 2. Preserve middleware after() modifications
-      // 3. Avoid message duplication (strategy already adds input)
-      // 4. Return the correctly built state from the execution pipeline
+      // Per UAP-1.0 Section 4.6, ask() delegates to generate() because the execution
+      // strategy handles adding input to state and appending the response. This
+      // preserves all middleware modifications and avoids message duplication.
       return agentInstance.generate(input, state);
     },
 
@@ -341,6 +397,7 @@ export function agent(options: AgentOptions): Agent {
   return agentInstance;
 }
 
+// Re-export core types for consumer convenience
 export type { Agent, AgentOptions } from './types.ts';
 export type {
   GenerateResult,
@@ -348,7 +405,6 @@ export type {
   AgentStreamEvent,
   UAPEventType,
   AgentStrategy,
-  // Sub-agent event types (Section 8.7)
   SubagentEventType,
   SubagentEventBase,
   SubagentStartEvent,

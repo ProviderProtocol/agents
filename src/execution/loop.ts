@@ -8,22 +8,56 @@ import type {
   AgentStreamEvent,
 } from './types.ts';
 
+/**
+ * Default configuration for the loop strategy.
+ * @internal
+ */
 const DEFAULT_LOOP_OPTIONS: Required<LoopOptions> = {
   maxIterations: Infinity,
 };
 
 /**
- * Create a loop execution strategy.
- * The simplest strategy - equivalent to UPP's tool loop behavior.
+ * Creates a loop execution strategy for agent execution.
  *
- * Behavior:
+ * The loop strategy is the simplest execution pattern, equivalent to UPP's
+ * native tool loop behavior. It follows this cycle:
+ *
  * 1. Send input to LLM
  * 2. If response has tool calls, execute tools and loop
  * 3. Continue until no tool calls or maxIterations reached
  * 4. Return final response as UPP Turn
  *
- * @param options - Loop configuration options
- * @returns ExecutionStrategy
+ * This strategy is ideal for straightforward tool-use scenarios where the
+ * model naturally knows when to stop calling tools.
+ *
+ * @param options - Configuration options for the loop strategy
+ * @returns An ExecutionStrategy instance implementing the loop pattern
+ *
+ * @example
+ * ```typescript
+ * import { createAgent, loop } from '@providerprotocol/agents';
+ *
+ * // Basic usage with default settings (unlimited iterations)
+ * const agent = createAgent({
+ *   llm: myLLM,
+ *   tools: [weatherTool, searchTool],
+ *   strategy: loop(),
+ * });
+ *
+ * // With iteration limit
+ * const limitedAgent = createAgent({
+ *   llm: myLLM,
+ *   tools: [weatherTool],
+ *   strategy: loop({ maxIterations: 5 }),
+ * });
+ *
+ * // Execute
+ * const result = await agent.generate('What is the weather in Tokyo?');
+ * console.log(result.turn.response.text);
+ * ```
+ *
+ * @see {@link react} for reasoning-enhanced execution
+ * @see {@link plan} for structured multi-step execution
  */
 export function loop(options: LoopOptions = {}): ExecutionStrategy {
   const opts = { ...DEFAULT_LOOP_OPTIONS, ...options };
@@ -31,78 +65,73 @@ export function loop(options: LoopOptions = {}): ExecutionStrategy {
   return {
     name: 'loop',
 
+    /**
+     * Executes the loop strategy synchronously (non-streaming).
+     *
+     * Processes the input through the LLM, executing any tool calls
+     * in a loop until no more tools are requested or maxIterations
+     * is reached. Checkpoints are saved after each step if configured.
+     *
+     * @param context - The execution context containing LLM, state, tools, etc.
+     * @returns Promise resolving to the execution result with final turn and state
+     * @throws {Error} When execution is aborted via signal
+     * @throws {Error} When no turn is generated (should never happen in normal operation)
+     */
     async execute(context: ExecutionContext): Promise<ExecutionResult> {
       const { llm, input, state, strategy, signal } = context;
 
-      // Add input message to state and set agentId in metadata
-      // This ensures checkpoints include the full conversation
       let currentState = state
         .withMessage(input)
         .withMetadata('agentId', context.agent.id);
       let iteration = 0;
       let finalTurn: Turn | undefined;
 
-      // Messages for LLM generation (includes input we just added)
       const inputMessages = [...currentState.messages];
 
       while (true) {
         iteration++;
         currentState = currentState.withStep(iteration);
 
-        // Check abort signal
         if (signal?.aborted) {
           throw new Error('Execution aborted');
         }
 
-        // Call strategy hooks
         strategy.onStepStart?.(iteration, currentState);
 
-        // Generate response - llm.generate uses rest params, pass messages array
         const turn = await llm.generate(inputMessages);
         finalTurn = turn;
 
-        // Update state with messages from this turn
         currentState = currentState.withMessages(turn.messages);
 
-        // Call action hook if there were tool calls
         if (turn.response.hasToolCalls) {
           strategy.onAct?.(iteration, turn.response.toolCalls ?? []);
         }
 
-        // Call observe hook if there were tool executions
         if (turn.toolExecutions && turn.toolExecutions.length > 0) {
           strategy.onObserve?.(iteration, turn.toolExecutions);
         }
 
-        // Call step end hook
         strategy.onStepEnd?.(iteration, { turn, state: currentState });
 
-        // Save checkpoint after step completes (fire-and-forget, log errors)
         if (context.checkpoints && context.sessionId) {
           context.checkpoints.save(context.sessionId, currentState.toJSON()).catch((err) => {
             console.error('[UAP] Checkpoint save failed:', err);
           });
         }
 
-        // Check stop condition
         const shouldStop = await strategy.stopCondition?.(currentState);
         if (shouldStop) {
           break;
         }
 
-        // Check if there are more tool calls to process
-        // UPP's llm.generate handles the tool loop internally,
-        // so we only need one iteration unless we're doing multi-step
         if (!turn.response.hasToolCalls) {
           break;
         }
 
-        // Check iteration limit
         if (opts.maxIterations !== Infinity && iteration >= opts.maxIterations) {
           break;
         }
 
-        // For next iteration, use the updated messages
         inputMessages.length = 0;
         inputMessages.push(...currentState.messages);
       }
@@ -111,8 +140,6 @@ export function loop(options: LoopOptions = {}): ExecutionStrategy {
         throw new Error('No turn generated');
       }
 
-      // Include sessionId in state metadata if checkpointing is enabled
-      // Per UAP spec Section 3.4: sessionId MUST be included in state.metadata
       let finalState = currentState;
       if (context.sessionId) {
         finalState = currentState.withMetadata('sessionId', context.sessionId);
@@ -128,6 +155,29 @@ export function loop(options: LoopOptions = {}): ExecutionStrategy {
       return result;
     },
 
+    /**
+     * Executes the loop strategy with streaming support.
+     *
+     * Returns an AgentStreamResult that emits both UAP-level events
+     * (step_start, step_end, action, observation) and UPP-level events
+     * (text_delta, tool_call_delta, etc.) as the execution progresses.
+     *
+     * @param context - The execution context containing LLM, state, tools, etc.
+     * @returns AgentStreamResult for async iteration over events and final result
+     *
+     * @example
+     * ```typescript
+     * const stream = agent.stream('What is the weather?');
+     *
+     * for await (const event of stream) {
+     *   if (event.source === 'upp' && event.upp?.type === 'text_delta') {
+     *     process.stdout.write(event.upp.delta.text ?? '');
+     *   }
+     * }
+     *
+     * const result = await stream.result;
+     * ```
+     */
     stream(context: ExecutionContext): AgentStreamResult {
       const { llm, input, state, strategy, signal } = context;
       const agentId = context.agent.id;
@@ -135,7 +185,6 @@ export function loop(options: LoopOptions = {}): ExecutionStrategy {
       let aborted = false;
       const abortController = new AbortController();
 
-      // Combine signals if one was provided
       if (signal) {
         signal.addEventListener('abort', () => abortController.abort());
       }
@@ -148,16 +197,17 @@ export function loop(options: LoopOptions = {}): ExecutionStrategy {
         rejectResult = reject;
       });
 
+      /**
+       * Async generator that yields stream events during execution.
+       * @internal
+       */
       async function* generateEvents(): AsyncGenerator<AgentStreamEvent> {
-        // Add input message to state and set agentId in metadata
-        // This ensures checkpoints include the full conversation
         let currentState = state
           .withMessage(input)
           .withMetadata('agentId', context.agent.id);
         let iteration = 0;
         let finalTurn: Turn | undefined;
 
-        // Messages for LLM generation (includes input we just added)
         const inputMessages = [...currentState.messages];
 
         try {
@@ -171,7 +221,6 @@ export function loop(options: LoopOptions = {}): ExecutionStrategy {
 
             strategy.onStepStart?.(iteration, currentState);
 
-            // Emit step start event
             yield {
               source: 'uap',
               uap: {
@@ -182,7 +231,6 @@ export function loop(options: LoopOptions = {}): ExecutionStrategy {
               },
             };
 
-            // Stream the LLM response
             const streamResult = llm.stream(inputMessages);
 
             for await (const event of streamResult as AsyncIterable<StreamEvent>) {
@@ -190,14 +238,12 @@ export function loop(options: LoopOptions = {}): ExecutionStrategy {
                 throw new Error('Execution aborted');
               }
 
-              // Yield UPP events
               yield {
                 source: 'upp',
                 upp: event,
               };
             }
 
-            // Get the final turn from the stream
             const turn = await streamResult.turn;
             finalTurn = turn;
 
@@ -233,7 +279,6 @@ export function loop(options: LoopOptions = {}): ExecutionStrategy {
 
             strategy.onStepEnd?.(iteration, { turn, state: currentState });
 
-            // Save checkpoint after step completes (fire-and-forget, log errors)
             if (context.checkpoints && context.sessionId) {
               context.checkpoints.save(context.sessionId, currentState.toJSON()).catch((err) => {
                 console.error('[UAP] Checkpoint save failed:', err);
@@ -271,8 +316,6 @@ export function loop(options: LoopOptions = {}): ExecutionStrategy {
             throw new Error('No turn generated');
           }
 
-          // Include sessionId in state metadata if checkpointing is enabled
-          // Per UAP spec Section 3.4: sessionId MUST be included in state.metadata
           let finalState = currentState;
           if (context.sessionId) {
             finalState = currentState.withMetadata('sessionId', context.sessionId);
