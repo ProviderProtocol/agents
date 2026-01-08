@@ -164,6 +164,10 @@ async function processDirectory(dir: string, relativePath: string = ""): Promise
     const entryRelativePath = join(relativePath, entry.name);
 
     if (entry.isDirectory()) {
+      // Skip _media directories (contain non-doc files)
+      if (entry.name === "_media") {
+        continue;
+      }
       await processDirectory(fullPath, entryRelativePath);
     } else if (entry.name.endsWith(".md")) {
       // Skip modules.md as it's just an index
